@@ -8,13 +8,13 @@ android {
     namespace 'ar.com.pioca.respuestas' // Namespace de código: no es el identificador de instalación
     compileSdk 35
     defaultConfig {
-        // Identidad NUEVA para V3. No cambiarla en actualizaciones futuras.
+        // Identidad permanente desde V3; mantener para todas las actualizaciones.
         applicationId 'ar.com.pioca.empleadoia'
         minSdk 26
         targetSdk 35
         // Número creciente automático, sin editar a mano en cada actualización
-        versionCode 300000 + numeroCompilacion
-        versionName '3.0'
+        versionCode 400000 + numeroCompilacion
+        versionName '4.0'
     }
     signingConfigs {
         pioca {
