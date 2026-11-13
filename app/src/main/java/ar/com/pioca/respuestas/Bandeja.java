@@ -10,6 +10,9 @@ import java.util.*;
 public class Bandeja extends NotificationListenerService {
     static final Map<String,Ficha> activas = new LinkedHashMap<>();
     static Runnable cambio;
+    static volatile boolean conectado=false;
+    static volatile long ultimoAviso=0;
+
     static class Ficha {
         final String id,hilo,nombre,texto;
         final Notification.Action accion;
@@ -40,18 +43,19 @@ public class Bandeja extends NotificationListenerService {
     }
     static void avisar(){Runnable r=cambio;if(r!=null)r.run();}
     @Override public void onListenerConnected(){
+        conectado=true;
         synchronized(activas){activas.clear();}
         StatusBarNotification[] all=getActiveNotifications();
         if(all!=null)for(StatusBarNotification sb:all)leer(sb);
         avisar();
     }
-    @Override public void onListenerDisconnected(){synchronized(activas){activas.clear();}avisar();}
+    @Override public void onListenerDisconnected(){conectado=false;synchronized(activas){activas.clear();}avisar();}
     @Override public void onNotificationRemoved(StatusBarNotification sb){
         synchronized(activas){activas.remove(sb.getKey());}
         avisar();
     }
     @Override public void onNotificationPosted(StatusBarNotification sb){
-        if("com.whatsapp.w4b".equals(sb.getPackageName())){leer(sb);avisar();}
+        if("com.whatsapp.w4b".equals(sb.getPackageName())){ultimoAviso=System.currentTimeMillis();leer(sb);avisar();}
     }
     private void leer(StatusBarNotification sb){
         if(!"com.whatsapp.w4b".equals(sb.getPackageName()))return;
@@ -77,11 +81,14 @@ public class Bandeja extends NotificationListenerService {
                 List<Notification.MessagingStyle.Message> mensajes=Notification.MessagingStyle.Message.getMessagesFromBundleArray(bundles);
                 if(mensajes!=null)for(Notification.MessagingStyle.Message m:mensajes){
                     CharSequence cuerpo=m.getText();
-                    if(cuerpo!=null && cuerpo.length()>0){
-                        // El timestamp del mensaje permite deduplicar actualizaciones de la notificación.
-                        Memoria.entrada(this,ficha,cuerpo.toString(),m.getTimestamp());
-                        capturoEstilo=true;
-                    }
+                    if(cuerpo==null||cuerpo.length()==0)continue;
+                    capturoEstilo=true;
+                    // MessagingStyle: sender nulo representa un mensaje propio, no del cliente.
+                    // WhatsApp a veces reanexa el mensaje del operador a la notificación.
+                    if(android.os.Build.VERSION.SDK_INT>=28){
+                        if(m.getSenderPerson()==null)continue;
+                    }else if(m.getSender()==null)continue;
+                    Memoria.entrada(this,ficha,cuerpo.toString(),m.getTimestamp()>0?m.getTimestamp():sb.getPostTime());
                 }
             }
         }catch(Exception ignored){}

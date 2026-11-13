@@ -22,25 +22,29 @@ import java.text.Normalizer;
 import java.util.regex.*;
 import java.util.*;
 
-/** piOca® Empleado IA V3. Se conserva el applicationId de las versiones anteriores. */
+/** piOca® Empleado IA Premium V4. Mismo package Android y firma de V3. */
 public class Panel extends Activity {
     static final int NAVY=Color.rgb(20,33,51),GREEN=Color.rgb(11,117,90),BG=Color.rgb(246,248,250);
     static final int MUTED=Color.rgb(101,115,127),BORDER=Color.rgb(220,228,234);
     LinearLayout root,body,container;
     ScrollView scroll;
-    EditText indicacion,resultado;
+    EditText indicacion,resultado,correccion;
     TextView estado;
     Button enviar, botonProceso;
     String hiloActual,clienteActual,consultaActual,procesoActual="Presupuestos nuevos";
-    String primerBorrador="",propuestaAI="",ultimaIndicacion="";
+    String primerBorrador="",propuestaAI="",ultimaIndicacion="",historialCorrecciones="";
+    long marcaConsulta=0;
     boolean mostrandoArchivados=false;
     int ultimaSolicitud=0;
-    final int VOZ=200;
+    final int VOZ=200, VOZ_CORRECCION=201;
 
     @Override public void onCreate(Bundle state){super.onCreate(state);mostrarBandeja(false);}
     @Override protected void onResume(){super.onResume();Bandeja.cambio=()->runOnUiThread(()->{
-        if(hiloActual==null)mostrarBandeja(mostrandoArchivados);else actualizarEnvio();
-    }); if(hiloActual!=null)actualizarEnvio();}
+        if(hiloActual==null)mostrarBandeja(mostrandoArchivados);
+        else if(!revisarNuevaConsulta())actualizarEnvio();
+    });
+    if(hiloActual!=null){if(!revisarNuevaConsulta())actualizarEnvio();}
+    }
     @Override protected void onPause(){Bandeja.cambio=null;super.onPause();}
 
     int dp(float x){return Math.round(x*getResources().getDisplayMetrics().density);}
@@ -72,7 +76,7 @@ public class Panel extends Activity {
         ImageView logo=new ImageView(this);logo.setImageResource(R.drawable.marca);logo.setScaleType(ImageView.ScaleType.FIT_CENTER);
         barra.addView(logo,lp(39,39));
         LinearLayout marca=linear(true);
-        marca.addView(texto("piOca®",15,NAVY,true));marca.addView(texto("Empleado IA",12,MUTED,false));
+        marca.addView(texto("piOca®",15,NAVY,true));marca.addView(texto("Empleado IA · Premium V4",12,MUTED,false));
         barra.addView(marca,margen(0,-2,7,0,0,0));
         Space espacio=new Space(this);barra.addView(espacio,new LinearLayout.LayoutParams(0,1,1));
         TextView options=texto("⚙",23,NAVY,false);options.setGravity(Gravity.CENTER);options.setContentDescription("Configuración");
@@ -84,7 +88,7 @@ public class Panel extends Activity {
         scroll.addView(container);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
     }
     void mostrarBandeja(boolean archivados){
-        hiloActual=null;indicacion=null;resultado=null;enviar=null;
+        hiloActual=null;indicacion=null;resultado=null;correccion=null;enviar=null;
         mostrandoArchivados=archivados;
         empezar("Bandeja de atención · WhatsApp Business");
         LinearLayout tabs=linear(false);tabs.setBackground(fondo(Color.rgb(233,239,242),14,0));tabs.setPadding(dp(4),dp(4),dp(4),dp(4));
@@ -97,6 +101,14 @@ public class Panel extends Activity {
         tabs.addView(t1,new LinearLayout.LayoutParams(0,-2,1));tabs.addView(t2,new LinearLayout.LayoutParams(0,-2,1));
         t1.setOnClickListener(v->mostrarBandeja(false));t2.setOnClickListener(v->mostrarBandeja(true));
         container.addView(tabs,lp(-1,-2));
+        String estadoCaptura=Bandeja.conectado?
+            (Bandeja.ultimoAviso>0?"✓ Notificaciones activas · Última recepción: "+new SimpleDateFormat("HH:mm",new Locale("es","AR")).format(new Date(Bandeja.ultimoAviso)):
+            "✓ Acceso a notificaciones conectado"):
+            "⚠ Acceso a notificaciones sin conexión · Tocá acá para revisar";
+        TextView captura=texto(estadoCaptura,12,Bandeja.conectado?GREEN:MUTED,true);
+        captura.setPadding(dp(7),dp(12),dp(7),dp(2));
+        captura.setOnClickListener(v->startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)));
+        container.addView(captura);
         TextView encabezado=texto(archivados?"Conversaciones archivadas":"Mensajes por responder",21,NAVY,true);
         container.addView(encabezado,margen(-1,-2,2,20,2,5));
         TextView detalle=texto(archivados?"Podés recuperar cualquier conversación deslizando a la derecha.":
@@ -139,17 +151,52 @@ public class Panel extends Activity {
                 }return true;
             }
         });
+        Button accion=boton(archivados?"↩  Volver a pendientes":"✓  Archivar",NAVY,false,()->{
+            if(archivados)Memoria.reabrir(Panel.this,h.id);else Memoria.archivar(Panel.this,h.id);
+            mostrarBandeja(archivados);
+        });
+        c.addView(accion,margen(-1,40,0,10,0,0));
         container.addView(c,margen(-1,-2,0,0,0,9));
     }
     void abrirHilo(Memoria.Hilo h){
         hiloActual=h.id;clienteActual=h.nombre;consultaActual=h.ultimo;
-        primerBorrador="";propuestaAI="";ultimaIndicacion="";procesoActual="Presupuestos nuevos";
+        primerBorrador="";propuestaAI="";ultimaIndicacion="";historialCorrecciones="";
+        marcaConsulta=h.recibido;
+        procesoActual=Procesos.clasificar(consultaActual);
         mostrarConversacion();
     }
+    /** Si llega una pregunta nueva durante el editor, abrir un borrador específico para ella. */
+    boolean revisarNuevaConsulta(){
+        if(hiloActual==null)return false;
+        for(JSONObject e:Memoria.eventos(this,hiloActual)){
+            if(!"recibido".equals(e.optString("tipo")))continue;
+            long t=e.optLong("hora");
+            if(t>marcaConsulta){
+                marcaConsulta=t;consultaActual=e.optString("mensaje");
+                clienteActual=e.optString("nombre",clienteActual);
+                procesoActual=Procesos.clasificar(consultaActual);
+                primerBorrador="";propuestaAI="";ultimaIndicacion="";historialCorrecciones="";
+                ultimaSolicitud++;
+                mostrarConversacion();
+                aviso("Llegó una consulta nueva. Editor preparado para esta pregunta.");
+                return true;
+            }
+        }
+        return false;
+    }
+    String claveBorrador(){return "texto.v4."+hash(hiloActual+"\n"+marcaConsulta);}
     void mostrarConversacion(){
         empezar("‹  "+clienteActual+"  ·  Conversación disponible");
-        Button atras=boton("‹  Volver a pendientes",NAVY,false,()->mostrarBandeja(false));
-        container.addView(atras,margen(-1,43,0,0,0,12));
+        LinearLayout acciones=linear(false);acciones.setGravity(Gravity.CENTER_VERTICAL);
+        Button atras=boton("‹ Volver",NAVY,false,()->mostrarBandeja(false));
+        acciones.addView(atras,new LinearLayout.LayoutParams(0,dp(43),1));
+        boolean archivado=Memoria.archivado(this,hiloActual);
+        Button archivar=boton(archivado?"↩ Desarchivar":"✓ Archivar",GREEN,false,()->{
+            if(Memoria.archivado(this,hiloActual)){Memoria.reabrir(this,hiloActual);mostrarBandeja(false);}
+            else {Memoria.archivar(this,hiloActual);mostrarBandeja(false);}
+        });
+        acciones.addView(archivar,margen(145,43,8,0,0,0));
+        container.addView(acciones,margen(-1,43,0,0,0,12));
         LinearLayout historial=card();
         historial.addView(texto("Conversación registrada",16,NAVY,true),margen(-1,-2,0,0,0,11));
         List<JSONObject> eventos=Memoria.eventos(this,hiloActual);
@@ -166,27 +213,25 @@ public class Panel extends Activity {
             historial.addView(wrapper,margen(-1,-2,0,0,0,8));
         }
         container.addView(historial,margen(-1,-2,0,0,0,14));
-        Procesos.Aprendida aprendida=Procesos.sugerencia(this,consultaActual);
-        if(aprendida!=null){
-            LinearLayout c=card();c.setBackground(fondo(Color.rgb(239,248,246),16,0));
-            c.addView(texto("✦  Hay una respuesta aprendida similar",14,GREEN,true));
-            c.addView(texto(aprendida.respuesta,13,NAVY,false),margen(-1,-2,0,9,0,8));
-            Button usar=boton("Usar como borrador",GREEN,true,()->{
-                resultado.setText(aprendida.respuesta);propuestaAI=aprendida.respuesta;procesoActual=aprendida.proceso;
-                ultimaIndicacion="Respuesta aprendida";estado.setText("Respuesta aprendida cargada. Podés corregirla.");
-            });c.addView(usar,lp(-1,43));container.addView(c,margen(-1,-2,0,0,0,14));
+        List<Procesos.Aprendida> aprobadas=Procesos.ejemplos(this,consultaActual,procesoActual,4);
+        if(!aprobadas.isEmpty()){
+            LinearLayout aprendidas=card();
+            aprendidas.setBackground(fondo(Color.rgb(239,248,246),16,0));
+            aprendidas.addView(texto("✦  Memoria contextual: "+aprobadas.size()+" respuestas aprobadas",13,GREEN,true));
+            aprendidas.addView(texto("La IA usará ejemplos pertinentes de "+procesoActual+" para redactar; no copiará saludos aislados ni datos particulares.",12,MUTED,false),margen(-1,-2,0,5,0,0));
+            container.addView(aprendidas,margen(-1,-2,0,0,0,12));
         }
         LinearLayout indicaciones=card();
         indicaciones.addView(texto("Tu indicación",16,NAVY,true));
-        indicaciones.addView(texto("Dictá o escribí qué querés responder. La IA solamente dará formato profesional.",12,MUTED,false),margen(-1,-2,0,5,0,8));
+        indicaciones.addView(texto("Dictá o escribí qué querés responder. La IA transformará tus requisitos en un mensaje profesional, dividido en párrafos.",12,MUTED,false),margen(-1,-2,0,5,0,8));
         LinearLayout fila=linear(false);fila.setGravity(Gravity.BOTTOM);
         indicacion=new EditText(this);indicacion.setTextSize(15);indicacion.setTextColor(NAVY);
         indicacion.setBackground(fondo(BG,11,BORDER));indicacion.setPadding(dp(11),dp(10),dp(11),dp(10));
         indicacion.setHint("Dictá tu respuesta o escribila...");indicacion.setMinLines(3);indicacion.setMaxLines(7);
         fila.addView(indicacion,new LinearLayout.LayoutParams(0,-2,1));
-        Button voz=boton("🎙",GREEN,true,this::dictar);voz.setContentDescription("Dictar indicación por voz");
+        Button voz=boton("🎙",GREEN,true,()->dictar(VOZ));voz.setContentDescription("Dictar indicación por voz");
         fila.addView(voz,margen(54,56,7,0,0,0));indicaciones.addView(fila);
-        Button mejorar=boton("✦  Redactar profesionalmente",GREEN,true,()->generar(false));
+        Button mejorar=boton("✦  Redactar profesionalmente",GREEN,true,()->generar("redactar"));
         indicaciones.addView(mejorar,margen(-1,48,0,12,0,0));
         container.addView(indicaciones,margen(-1,-2,0,0,0,14));
         LinearLayout editor=card();editor.addView(texto("Respuesta para el cliente",16,NAVY,true));
@@ -195,21 +240,37 @@ public class Panel extends Activity {
         resultado.setBackground(fondo(BG,11,BORDER));resultado.setMinLines(5);resultado.setMaxLines(14);
         resultado.setGravity(Gravity.TOP);resultado.setPadding(dp(12),dp(12),dp(12),dp(12));
         resultado.setHint("Aquí aparecerá la redacción profesional...");
-        String memoriaBorrador=getSharedPreferences("borradores",0).getString("texto.v3."+hash(hiloActual),"");
+        String memoriaBorrador=getSharedPreferences("borradores",0).getString(claveBorrador(),"");
         if(!memoriaBorrador.isEmpty())resultado.setText(memoriaBorrador);
         editor.addView(resultado,lp(-1,-2));
         resultado.addTextChangedListener(new TextWatcher(){
             public void beforeTextChanged(CharSequence s,int start,int count,int after){}
             public void onTextChanged(CharSequence s,int start,int before,int count){
-                getSharedPreferences("borradores",0).edit().putString("texto.v3."+hash(hiloActual),s.toString()).apply();
+                getSharedPreferences("borradores",0).edit().putString(claveBorrador(),s.toString()).apply();
                 actualizarEnvio();
             }
             public void afterTextChanged(Editable s){}
         });
-        Button orto=boton("✓  Revalidar ortografía",NAVY,false,()->generar(true));
+        LinearLayout ajuste=card();
+        ajuste.addView(texto("Corregir una respuesta ya redactada",16,NAVY,true));
+        ajuste.addView(texto("Dictá qué querés cambiar. La IA conservará el resto y rearmará el mensaje completo.",12,MUTED,false),margen(-1,-2,0,5,0,8));
+        LinearLayout filaCorreccion=linear(false);filaCorreccion.setGravity(Gravity.BOTTOM);
+        correccion=new EditText(this);correccion.setTextSize(15);correccion.setTextColor(NAVY);
+        correccion.setBackground(fondo(BG,11,BORDER));correccion.setPadding(dp(11),dp(10),dp(11),dp(10));
+        correccion.setHint("Ej.: Sacá el último párrafo y aclará que necesitamos una foto del portón completo.");
+        correccion.setMinLines(3);correccion.setMaxLines(6);
+        filaCorreccion.addView(correccion,new LinearLayout.LayoutParams(0,-2,1));
+        Button micCorreccion=boton("🎙",GREEN,true,()->dictar(VOZ_CORRECCION));
+        micCorreccion.setContentDescription("Dictar correcciones al mensaje ya armado");
+        filaCorreccion.addView(micCorreccion,margen(54,56,7,0,0,0));
+        ajuste.addView(filaCorreccion);
+        Button aplicar=boton("✦ Aplicar correcciones con IA",GREEN,true,()->generar("correccion"));
+        ajuste.addView(aplicar,margen(-1,48,0,12,0,0));
+        editor.addView(ajuste,margen(-1,-2,0,12,0,6));
+        Button orto=boton("✓ Revalidar solo ortografía",NAVY,false,()->generar("ortografia"));
         editor.addView(orto,margen(-1,44,0,12,0,8));
         // La acción principal va inmediatamente debajo del mensaje y su corrección opcional.
-        enviar=boton("ENVIAR AL CLIENTE  ➤",GREEN,true,this::mandar);
+        enviar=boton("ENVIAR WHATSAPP  ➤",GREEN,true,this::mandar);
         enviar.setTextSize(17);enviar.setContentDescription("Enviar al cliente por WhatsApp Business");
         editor.addView(enviar,lp(-1,58));
         estado=texto("",12,MUTED,false);editor.addView(estado,margen(-1,-2,0,8,0,0));
@@ -224,11 +285,11 @@ public class Panel extends Activity {
         boolean puede=f!=null&&f.puedeResponder();
         enviar.setEnabled(puede&&!resultado.getText().toString().trim().isEmpty());
         enviar.setAlpha(puede?1f:0.50f);
-        estado.setText(puede?"Respuesta directa disponible desde la notificación de WhatsApp Business.":
-          "WhatsApp no ofrece respuesta directa en este momento. Podés copiar el texto, abrir WhatsApp y archivar manualmente.");
-        // Fallback explícito sin prometer una entrega que no ocurrió.
-        if(!puede){enviar.setText("COPIAR Y ABRIR WHATSAPP  ↗");enviar.setEnabled(!resultado.getText().toString().trim().isEmpty());enviar.setAlpha(1f);}
-        else enviar.setText("ENVIAR AL CLIENTE  ➤");
+        estado.setText(puede?"Envío desde Empleado IA mediante la respuesta de la notificación de WhatsApp Business.":
+          "La notificación actual no permite enviar directamente. Al tocar se abrirá WhatsApp con el texto copiado para pegar y enviar.");
+        // No prometer envío directo si WhatsApp no suministra RemoteInput vigente.
+        if(!puede){enviar.setText("ABRIR WHATSAPP PARA ENVIAR ↗");enviar.setEnabled(!resultado.getText().toString().trim().isEmpty());enviar.setAlpha(1f);}
+        else enviar.setText("ENVIAR WHATSAPP  ➤");
     }
     void mandar(){
         String fin=resultado.getText().toString().trim();if(fin.isEmpty())return;
@@ -242,10 +303,17 @@ public class Panel extends Activity {
         }
         try{
             f.responder(this,fin); // Android acepta el PendingIntent; no es un recibo de entrega al destinatario.
-            String clave=Memoria.aprobada(this,hiloActual,clienteActual,consultaActual,primerBorrador,propuestaAI,fin,procesoActual,ultimaIndicacion);
+            String clave=Memoria.aprobada(this,hiloActual,clienteActual,consultaActual,primerBorrador,propuestaAI,fin,procesoActual,(historialCorrecciones.isEmpty()?ultimaIndicacion:ultimaIndicacion+"\nCorrecciones: "+historialCorrecciones));
             Memoria.archivar(this,hiloActual);
-            getSharedPreferences("borradores",0).edit().remove("texto.v3."+hash(hiloActual)).apply();
-            aviso("Orden de envío aceptada por WhatsApp. Conversación archivada.");
+            // Primero vaciar el editor. El TextWatcher ya guarda el valor vacío;
+            // después borrar el borrador para evitar reaparecer en el siguiente turno.
+            ultimaSolicitud++;
+            resultado.setText("");
+            if(indicacion!=null)indicacion.setText("");
+            if(correccion!=null)correccion.setText("");
+            primerBorrador="";propuestaAI="";ultimaIndicacion="";historialCorrecciones="";
+            getSharedPreferences("borradores",0).edit().remove(claveBorrador()).remove("texto.v3."+hash(hiloActual)).apply();
+            aviso("Orden de envío aceptada. Editor vacío; conversación archivada.");
             elegirProceso(true,clave);
         }catch(PendingIntent.CanceledException ex){
             aviso("La notificación venció. Conservamos el borrador; no se archivó.");actualizarEnvio();
@@ -276,28 +344,33 @@ public class Panel extends Activity {
               }
           }).setNegativeButton("Cancelar",(d,n)->{if(despues)mostrarBandeja(false);}).show();
     }
-    void generar(boolean soloOrtografia){
-        if(indicacion==null||resultado==null)return;
-        String texto=soloOrtografia?resultado.getText().toString().trim():indicacion.getText().toString().trim();
-        if(texto.isEmpty()){aviso(soloOrtografia?"Primero redactá una respuesta.":"Primero escribí o dictá tu indicación.");return;}
-        SharedPreferences conf=getSharedPreferences("conexion",0);
-        String url=conf.getString("url","");String token=conf.getString("token","");
-        if(!url.startsWith("https://")||token.isEmpty()){aviso("Configurá primero la conexión con IA.");ajustes();return;}
-        if(!soloOrtografia)primerBorrador=texto;
+    void generar(String modo){
+        if(indicacion==null||resultado==null||correccion==null)return;
+        boolean ortografia="ortografia".equals(modo),editar="correccion".equals(modo);
+        String texto=(ortografia?resultado:(editar?correccion:indicacion)).getText().toString().trim();
         String antes=resultado.getText().toString();
-        ultimaIndicacion=texto;
-        String prompt=Procesos.PROMPT+"\n"+(soloOrtografia?Procesos.ORTO:"")+"\n"+Procesos.regla(this,procesoActual);
+        if(texto.isEmpty()){aviso(ortografia?"Primero redactá la respuesta.":editar?"Dictá qué querés corregir del mensaje ya armado.":"Dictá qué querés responder al cliente.");return;}
+        if(editar&&antes.trim().isEmpty()){aviso("Primero hay que armar la respuesta que querés corregir.");return;}
+        SharedPreferences conf=getSharedPreferences("conexion",0);
+        String url=conf.getString("url",""),token=conf.getString("token","");
+        if(!url.startsWith("https://")||token.isEmpty()){aviso("Configurá primero la conexión con IA.");ajustes();return;}
+        if(!editar&&!ortografia)primerBorrador=texto;
+        // Ortografía no recibe el prompt creativo: así nunca se reescribe una edición manual.
+        String instrucciones=(ortografia?Procesos.ORTO:Procesos.PROMPT+(editar?"\n"+Procesos.CORRECCION:""))
+            +"\n"+Procesos.instrucciones(this,procesoActual);
         JSONObject data=Memoria.objeto("consulta",consultaActual,"indicacion",texto,"proceso",procesoActual,
-           "criterio",prompt,"borrador_actual",soloOrtografia?texto:antes,"modo",soloOrtografia?"ortografia":"estricto");
-        try{data.put("historial",Memoria.recientes(this,hiloActual));
+           "criterio",instrucciones,"borrador_actual",antes,"modo",modo);
+        try{
+            data.put("historial",Memoria.recientes(this,hiloActual));
             JSONArray ejemplos=new JSONArray();
-            for(JSONObject e:Memoria.eventos(this,null))if("aprobado".equals(e.optString("tipo"))&&e.optString("proceso").equals(procesoActual)){
-                ejemplos.put(e.optString("mensaje"));if(ejemplos.length()>=12)break;
+            if(!ortografia)for(Procesos.Aprendida e:Procesos.ejemplos(this,consultaActual,procesoActual,5)){
+                ejemplos.put(Memoria.objeto("consulta_original",e.consulta,"respuesta_aprobada",e.respuesta));
             }
             data.put("ejemplos",ejemplos);
         }catch(JSONException ignored){}
-        int solicitud=++ultimaSolicitud;String hilo=hiloActual;
-        estado.setText(soloOrtografia?"Revalidando ortografía...":"Redactando con IA...");
+        int solicitud=++ultimaSolicitud;
+        String hilo=hiloActual;long marca=marcaConsulta;
+        estado.setText(ortografia?"Revalidando ortografía...":editar?"Aplicando tu corrección...":"Redactando respuesta profesional por párrafos...");
         new Thread(()->{
             HttpsURLConnection con=null;
             try{
@@ -307,26 +380,51 @@ public class Panel extends Activity {
                 try(OutputStream os=con.getOutputStream()){os.write(data.toString().getBytes(StandardCharsets.UTF_8));}
                 int status=con.getResponseCode();
                 if(status!=200)throw new IOException("HTTP "+status);
-                String generado;try(InputStream is=con.getInputStream()){
+                String generado;
+                try(InputStream is=con.getInputStream()){
                     generado=new JSONObject(leer(is,128000)).getString("draft").trim();
                 }
                 if(generado.isEmpty())throw new IOException("Respuesta vacía");
-                final String fin=generado;
+                final String fin=ortografia?generado.replace("\r\n","\n"):
+                    presentar(generado);
                 runOnUiThread(()->{
-                    if(isDestroyed()||solicitud!=ultimaSolicitud||!hilo.equals(hiloActual)||resultado==null)return;
-                    if(!antes.equals(resultado.getText().toString())){aviso("Conservamos tu edición: no se reemplazó el texto mientras lo escribías.");return;}
-                    if(!respetaTerminos(texto,fin)){
-                        estado.setText("Se descartó una sugerencia porque cambió palabras técnicas o cantidades. Conservamos tu texto.");
-                        aviso("La sugerencia cambió términos de tu indicación. No la aplicamos.");
-                        return;
+                    if(isDestroyed()||solicitud!=ultimaSolicitud||!hilo.equals(hiloActual)||marca!=marcaConsulta||resultado==null)return;
+                    if(!antes.equals(resultado.getText().toString())){aviso("Conservamos tu edición; no reemplazamos el texto mientras escribías.");return;}
+                    // En una corrección explícita se pueden quitar detalles autorizados por el operador.
+                    // Para la revalidación solo se permite modificar ortografía/gramática.
+                    if(!editar&&!respetaTerminos(texto,fin)){
+                        estado.setText("La IA cambió algún término técnico o cantidad. Se conservó el texto original.");
+                        aviso("Revisá tu indicación: la IA no respetó términos o cantidades.");return;
                     }
-                    if(!soloOrtografia)propuestaAI=fin;
+                    if(!ortografia){propuestaAI=fin;ultimaIndicacion=texto;}
+                    if(editar){historialCorrecciones+=(historialCorrecciones.isEmpty()?"":"\n")+texto;correccion.setText("");}
                     resultado.setText(fin);resultado.setSelection(fin.length());
-                    estado.setText("Revisá el contenido. Se guardará tu versión final cuando la envíes.");
+                    estado.setText("Respuesta lista para revisar. Podés dictar otra corrección o enviar.");
                 });
             }catch(Exception ex){runOnUiThread(()->{if(!isDestroyed()&&hilo.equals(hiloActual))aviso("No se pudo generar: "+ex.getMessage());});}
             finally{if(con!=null)con.disconnect();}
         }).start();
+    }
+    /** Refuerzo visual si el modelo devolvió una respuesta larga en un solo bloque. */
+    static String presentar(String texto){
+        String limpio=texto.trim().replace("\r\n","\n");
+        if(limpio.contains("\n"))return limpio.replaceAll("[ \t]*\n+[ \t]*","\n\n");
+        if(limpio.length()<135)return limpio;
+        String[] frases=limpio.split("(?<=[.!?])\\s+(?=[A-ZÁÉÍÓÚÑ¿¡])");
+        if(frases.length<3)return limpio;
+        StringBuilder b=new StringBuilder();int desdeCorte=0;
+        for(int i=0;i<frases.length;i++){
+            String f=frases[i].trim();
+            if(f.isEmpty())continue;
+            if(b.length()>0){
+                boolean saludoCorto=i==1 && desdeCorte<55;
+                boolean cortar=saludoCorto||desdeCorte>=125;
+                b.append(cortar?"\n\n":" ");
+                if(cortar)desdeCorte=0;else desdeCorte++;
+            }
+            b.append(f);desdeCorte+=f.length();
+        }
+        return b.toString();
     }
     static String leer(InputStream is,int max)throws IOException{
         ByteArrayOutputStream o=new ByteArrayOutputStream();byte[] b=new byte[8192];int n;
@@ -350,21 +448,23 @@ public class Panel extends Activity {
         while(m.find())if(!b.contains(m.group()))return false;
         return true;
     }
-    void dictar(){
+    void dictar(int tipo){
         Intent voz=new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
         voz.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-        voz.putExtra(RecognizerIntent.EXTRA_LANGUAGE,"es-AR");voz.putExtra(RecognizerIntent.EXTRA_PROMPT,"Dictá tu respuesta para el cliente");
-        try{startActivityForResult(voz,VOZ);}catch(Exception ex){aviso("No hay servicio de dictado disponible en este teléfono.");}
+        voz.putExtra(RecognizerIntent.EXTRA_LANGUAGE,"es-AR");
+        voz.putExtra(RecognizerIntent.EXTRA_PROMPT,tipo==VOZ_CORRECCION?"Dictá las correcciones a la respuesta ya redactada":"Dictá los requisitos para responder al cliente");
+        try{startActivityForResult(voz,tipo);}catch(Exception ex){aviso("No hay servicio de dictado disponible en este teléfono.");}
     }
     @Override protected void onActivityResult(int request,int result,Intent data){
         super.onActivityResult(request,result,data);
         if(result!=RESULT_OK||data==null)return;
-        if(request==VOZ){
+        if(request==VOZ||request==VOZ_CORRECCION){
             ArrayList<String> frases=data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
-            if(frases!=null&&!frases.isEmpty()&&indicacion!=null){
-                String prev=indicacion.getText().toString().trim();
-                indicacion.setText(prev.isEmpty()?frases.get(0):prev+" "+frases.get(0));
-                indicacion.setSelection(indicacion.length());
+            EditText destino=request==VOZ?indicacion:correccion;
+            if(frases!=null&&!frases.isEmpty()&&destino!=null){
+                String prev=destino.getText().toString().trim();
+                destino.setText(prev.isEmpty()?frases.get(0):prev+" "+frases.get(0));
+                destino.setSelection(destino.length());
             }
         }else if(request==10||request==11){
             try{
@@ -378,10 +478,10 @@ public class Panel extends Activity {
         }
     }
     void ajustes(){
-        String[] opciones={"Conexión con OpenAI","Acceso a notificaciones","Procesos y reglas","Exportar memoria","Restaurar memoria"};
+        String[] opciones={"Conexión con OpenAI","Acceso a notificaciones","Conocimiento piOca® por segmento","Procesos y reglas","Exportar memoria","Restaurar memoria"};
         new AlertDialog.Builder(this).setTitle("Configuración").setItems(opciones,(d,n)->{
             if(n==0)conectar();else if(n==1)startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS));
-            else if(n==2)reglas();else if(n==3)respaldo(true);else respaldo(false);
+            else if(n==2)conocimiento();else if(n==3)reglas();else if(n==4)respaldo(true);else respaldo(false);
         }).show();
     }
     void conectar(){
@@ -393,6 +493,22 @@ public class Panel extends Activity {
         new AlertDialog.Builder(this).setTitle("Conexión IA").setView(campos).setMessage("La clave de OpenAI permanece en Cloudflare, no en la APK.")
             .setPositiveButton("Guardar",(d,n)->p.edit().putString("url",url.getText().toString().trim()).putString("token",token.getText().toString().trim()).apply())
             .setNegativeButton("Cerrar",null).show();
+    }
+    void conocimiento(){
+        List<String> lista=Procesos.nombres(this);
+        new AlertDialog.Builder(this).setTitle("Conocimiento empresarial por segmento")
+        .setMessage("Indicaciones que usa la IA según la consulta actual. Editá solamente procedimientos confirmados.")
+        .setItems(lista.toArray(new String[0]),(d,n)->{
+            String categoria=lista.get(n);
+            EditText edit=new EditText(this);edit.setMinLines(6);edit.setMaxLines(16);
+            edit.setPadding(dp(20),dp(14),dp(20),dp(14));
+            edit.setText(Procesos.conocimiento(this,categoria));
+            new AlertDialog.Builder(this).setTitle("Conocimiento · "+categoria).setView(edit)
+                .setPositiveButton("Guardar",(a,b)->{
+                    Procesos.guardarConocimiento(this,categoria,edit.getText().toString().trim());
+                    aviso("Conocimiento del segmento guardado.");
+                }).setNegativeButton("Cancelar",null).show();
+        }).setNegativeButton("Cerrar",null).show();
     }
     void reglas(){
         List<String> lista=Procesos.nombres(this);lista.add("+ Crear proceso");
@@ -408,7 +524,7 @@ public class Panel extends Activity {
     void respaldo(boolean exportar){
         Intent i=new Intent(exportar?Intent.ACTION_CREATE_DOCUMENT:Intent.ACTION_OPEN_DOCUMENT);
         i.addCategory(Intent.CATEGORY_OPENABLE);i.setType("application/json");
-        if(exportar)i.putExtra(Intent.EXTRA_TITLE,"pioca-memoria-v3-"+System.currentTimeMillis()+".json");
+        if(exportar)i.putExtra(Intent.EXTRA_TITLE,"pioca-memoria-v4-"+System.currentTimeMillis()+".json");
         startActivityForResult(i,exportar?10:11);
     }
     static String hash(String s){try{

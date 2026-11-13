@@ -4,7 +4,7 @@ import android.content.*;
 import org.json.*;
 import java.util.*;
 
-/** Datos de la versión 2 se conservan en las mismas preferencias. */
+/** Almacenamiento V4: compatible con archivo y procesos de V2/V3. */
 final class Memoria {
     static SharedPreferences datos(Context c){return c.getSharedPreferences("archivo",0);}
     static JSONObject objeto(String... pares) {
@@ -13,8 +13,19 @@ final class Memoria {
         catch(JSONException e){throw new IllegalArgumentException(e);}
         return j;
     }
+    /** Evita registrar ecos de mensajes propios que WhatsApp reanexa a una notificación. */
+    static boolean ecoPropio(Context c,String hilo,String texto,long t){
+        String enviado=texto.trim();if(enviado.isEmpty())return false;
+        for(Object v:datos(c).getAll().values())if(v instanceof String)try{
+            JSONObject e=new JSONObject((String)v);
+            if(!"aprobado".equals(e.optString("tipo"))||!hilo.equals(e.optString("hilo")))continue;
+            long delta=t-e.optLong("hora");
+            if(delta>=-120000L&&delta<=600000L&&enviado.equals(e.optString("mensaje").trim()))return true;
+        }catch(Exception ignored){}
+        return false;
+    }
     static void entrada(Context c,Bandeja.Ficha f,String texto,long t) {
-        if(texto==null||texto.trim().isEmpty())return;
+        if(texto==null||texto.trim().isEmpty()||ecoPropio(c,f.hilo,texto,t))return;
         String k="e3."+Panel.hash(f.hilo+"\n"+t+"\n"+texto);
         if(datos(c).contains(k))return;
         JSONObject j=objeto("hilo",f.hilo,"nombre",f.nombre,"mensaje",texto,"hora",Long.toString(t),"tipo","recibido");
@@ -45,13 +56,35 @@ final class Memoria {
     static void reabrir(Context c,String hilo){c.getSharedPreferences("archivados_v3",0).edit().remove(hilo).apply();}
     static boolean archivado(Context c,String hilo){return c.getSharedPreferences("archivados_v3",0).contains(hilo);}
     static List<JSONObject> eventos(Context c,String hilo){
-        List<JSONObject> lista=new ArrayList<>();
+        // Una sola lectura de SharedPreferences para evitar N*N lecturas en bandejas grandes.
+        List<JSONObject> registros=new ArrayList<>(),filtrados=new ArrayList<>();
+        Map<String,List<JSONObject>> salientes=new HashMap<>();
         for(Object v:datos(c).getAll().values())if(v instanceof String)try{
             JSONObject j=new JSONObject((String)v);
-            if(hilo==null||hilo.equals(j.optString("hilo")))lista.add(j);
+            String chat=j.optString("hilo");
+            if(hilo!=null&&!hilo.equals(chat))continue;
+            registros.add(j);
+            if("aprobado".equals(j.optString("tipo"))){
+                if(!salientes.containsKey(chat))salientes.put(chat,new ArrayList<>());
+                salientes.get(chat).add(j);
+            }
         }catch(JSONException ignored){}
-        lista.sort(Comparator.comparingLong(j->j.optLong("hora")));
-        return lista;
+        for(JSONObject j:registros){
+            if("recibido".equals(j.optString("tipo"))){
+                List<JSONObject> delChat=salientes.get(j.optString("hilo"));
+                boolean eco=false;
+                if(delChat!=null)for(JSONObject salida:delChat){
+                    long delta=j.optLong("hora")-salida.optLong("hora");
+                    if(delta>=-120000L&&delta<=600000L&&j.optString("mensaje").trim().equals(salida.optString("mensaje").trim())){
+                        eco=true;break;
+                    }
+                }
+                if(eco)continue;
+            }
+            filtrados.add(j);
+        }
+        filtrados.sort(Comparator.comparingLong(j->j.optLong("hora")));
+        return filtrados;
     }
     static class Hilo {
         String id,nombre="Cliente",ultimo="";
@@ -91,7 +124,7 @@ final class Memoria {
         }
         return a;
     }
-    static final String[] grupos={"procesos","archivo","borradores","categorias_v3","archivados_v3"};
+    static final String[] grupos={"procesos","archivo","borradores","categorias_v3","archivados_v3","conocimiento_v4"};
     static String respaldo(Context c)throws JSONException {
         JSONObject doc=new JSONObject().put("formato","piOca-respuestas-3");
         for(String g:grupos)doc.put(g,new JSONObject(c.getSharedPreferences(g,0).getAll()));
