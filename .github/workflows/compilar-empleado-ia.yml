@@ -1,5 +1,4 @@
-name: Compilar piOca Empleado IA
-
+name: Compilar piOca Empleado IA V3
 on:
   workflow_dispatch:
   push:
@@ -7,47 +6,58 @@ on:
       - 'app/**'
       - 'settings.gradle'
       - '.github/workflows/compilar-empleado-ia.yml'
-
 permissions:
   contents: read
-
 jobs:
   apk:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-
       - uses: android-actions/setup-android@v3
-        with:
-          packages: 'platform-tools'
-
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-
-      - name: Recuperar firma estable si está configurada
+      - name: Verificar firma persistente de actualizaciones
         shell: bash
         env:
           KEYSTORE: ${{ secrets.PIOCA_RESPUESTAS_DEBUG_KEYSTORE_B64 }}
         run: |
-          if [[ -n "$KEYSTORE" ]]; then
-            mkdir -p ~/.android
-            umask 077
-            echo "$KEYSTORE" | base64 -d > ~/.android/debug.keystore
+          set -euo pipefail
+          if [[ -z "${KEYSTORE}" ]]; then
+            echo 'ERROR: Falta la firma histórica. No se permite generar una APK que no pueda actualizar la instalación actual.' >&2
+            exit 1
           fi
-
-      - name: Compilar APK
+          mkdir -p ~/.android
+          umask 077
+          printf '%s' "$KEYSTORE" | base64 -d > ~/.android/debug.keystore
+          test -s ~/.android/debug.keystore
+      - name: Compilar APK y verificar certificado de actualización
+        shell: bash
+        env:
+          EXPECTED_CERT: ${{ secrets.PIOCA_RESPUESTAS_CERT_SHA256 }}
         run: |
+          set -euo pipefail
+          if [[ -z "${EXPECTED_CERT}" ]]; then
+            echo 'ERROR: Falta PIOCA_RESPUESTAS_CERT_SHA256 con la huella de la APK instalada.' >&2
+            exit 1
+          fi
           gradle :app:assembleDebug --no-daemon
-          cp app/build/outputs/apk/debug/app-debug.apk piOca-Empleado-IA.apk
-
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -n 1)
+          "$APKSIGNER" verify --verbose --print-certs "$APK"
+          ACTUAL=$("$APKSIGNER" verify --print-certs "$APK" | awk -F': ' '/Signer #1 certificate SHA-256 digest/ {print $2}' | tr -d ':' | tr '[:upper:]' '[:lower:]')
+          EXPECTED=$(printf '%s' "$EXPECTED_CERT" | tr -d ': ' | tr '[:upper:]' '[:lower:]')
+          if [[ "$ACTUAL" != "$EXPECTED" ]]; then
+            echo 'ERROR: El certificado no coincide con la APK instalada. NO DISTRIBUIR.' >&2
+            exit 1
+          fi
+          cp "$APK" piOca-Empleado-IA-V3.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: piOca-Empleado-IA
-          path: piOca-Empleado-IA.apk
+          name: piOca-Empleado-IA-V3
+          path: piOca-Empleado-IA-V3.apk
           if-no-files-found: error
