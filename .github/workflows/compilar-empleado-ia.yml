@@ -1,4 +1,4 @@
-name: Compilar piOca Empleado IA V3 - firma permanente
+name: Compilar piOca Empleado IA V4 - firma permanente
 
 on:
   workflow_dispatch:
@@ -60,10 +60,10 @@ jobs:
             echo 'Firma diferente a la firma permanente de piOca (o huella no reconocida). No distribuir.' >&2
             exit 1
           fi
-          cp "$APK" piOca-Empleado-IA-V3.apk
+          cp "$APK" piOca-Empleado-IA-V4.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: piOca-Empleado-IA-V3-firmada
-          path: piOca-Empleado-IA-V3.apk
+          name: piOca-Empleado-IA-V4-firmada
+          path: piOca-Empleado-IA-V4.apk
           if-no-files-found: error
