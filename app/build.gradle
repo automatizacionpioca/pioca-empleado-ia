@@ -1,12 +1,34 @@
 plugins { id 'com.android.application' version '8.7.3' }
+
+def numeroCompilacion = (System.getenv('GITHUB_RUN_NUMBER') ?: '1').toInteger()
+def archivoFirma = System.getenv('PIOCA_KEYSTORE_PATH') ?: 'firma-no-configurada.p12'
+def claveFirma = System.getenv('PIOCA_KEYSTORE_PASSWORD') ?: ''
+
 android {
-    namespace 'ar.com.pioca.respuestas'
+    namespace 'ar.com.pioca.respuestas' // Namespace de código: no es el identificador de instalación
     compileSdk 35
     defaultConfig {
-        applicationId 'ar.com.pioca.respuestas'
+        // Identidad NUEVA para V3. No cambiarla en actualizaciones futuras.
+        applicationId 'ar.com.pioca.empleadoia'
         minSdk 26
         targetSdk 35
-        versionCode 30
+        // Número creciente automático, sin editar a mano en cada actualización
+        versionCode 300000 + numeroCompilacion
         versionName '3.0'
+    }
+    signingConfigs {
+        pioca {
+            storeFile file(archivoFirma)
+            storePassword claveFirma
+            keyAlias 'piocaempleado'
+            keyPassword claveFirma
+            storeType 'pkcs12'
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.pioca
+        }
     }
 }
