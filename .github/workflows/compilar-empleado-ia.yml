@@ -22,7 +22,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      # v4 evita la instalacion del paquete Android SDK "tools" retirado por Google.
       - uses: android-actions/setup-android@v4
         with:
           packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
@@ -54,10 +53,11 @@ jobs:
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -n 1)
           test -n "$APKSIGNER"
           "$APKSIGNER" verify --verbose --print-certs "$APK"
-          ACTUAL=$("$APKSIGNER" verify --print-certs "$APK" | awk -F': ' '/Signer #1 certificate SHA-256 digest/ {print $2}' | tr -d ':' | tr '[:upper:]' '[:lower:]')
+          # Compatible tanto con "V2 Signer:" como con "Signer #1".
+          ACTUAL=$("$APKSIGNER" verify --print-certs "$APK" | awk -F': ' '/certificate SHA-256 digest:/ {print $NF; exit}' | tr -d ':' | tr '[:upper:]' '[:lower:]')
           EXPECTED='5a2717700fec0d77b8c544d57eeb8f84f7154faa0b7bd43a28348a643303c40a'
-          if [[ "$ACTUAL" != "$EXPECTED" ]]; then
-            echo 'Firma diferente a la firma permanente de piOca. No distribuir.' >&2
+          if [[ ! "$ACTUAL" =~ ^[0-9a-f]{64}$ || "$ACTUAL" != "$EXPECTED" ]]; then
+            echo 'Firma diferente a la firma permanente de piOca (o huella no reconocida). No distribuir.' >&2
             exit 1
           fi
           cp "$APK" piOca-Empleado-IA-V3.apk
