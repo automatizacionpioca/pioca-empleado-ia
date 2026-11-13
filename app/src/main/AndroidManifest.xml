@@ -1,6 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
   <uses-permission android:name="android.permission.INTERNET"/>
-  <application android:label="piOca® Empleado IA" android:icon="@drawable/marca" android:allowBackup="false" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+  <queries>
+    <package android:name="com.whatsapp.w4b"/>
+    <intent><action android:name="android.speech.action.RECOGNIZE_SPEECH"/></intent>
+  </queries>
+  <application android:label="piOca® Empleado IA" android:icon="@drawable/marca" android:allowBackup="false" android:theme="@android:style/Theme.Material.Light.NoActionBar" android:usesCleartextTraffic="false">
     <activity android:name=".Panel" android:exported="true" android:windowSoftInputMode="adjustResize">
       <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
     </activity>
