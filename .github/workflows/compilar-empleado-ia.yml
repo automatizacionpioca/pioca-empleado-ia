@@ -1,4 +1,5 @@
-name: Compilar piOca Empleado IA V3
+name: Compilar piOca Empleado IA V3 - firma permanente
+
 on:
   workflow_dispatch:
   push:
@@ -6,58 +7,63 @@ on:
       - 'app/**'
       - 'settings.gradle'
       - '.github/workflows/compilar-empleado-ia.yml'
+
 permissions:
   contents: read
+
 jobs:
   apk:
     runs-on: ubuntu-latest
+    env:
+      PIOCA_KEYSTORE_PASSWORD: ${{ secrets.PIOCA_EMPLEADO_KEYSTORE_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
+      # v4 evita la instalacion del paquete Android SDK "tools" retirado por Google.
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Verificar firma persistente de actualizaciones
+
+      - name: Recuperar firma permanente desde Secrets
         shell: bash
         env:
-          KEYSTORE: ${{ secrets.PIOCA_RESPUESTAS_DEBUG_KEYSTORE_B64 }}
+          KEYSTORE_B64: ${{ secrets.PIOCA_EMPLEADO_KEYSTORE_B64 }}
         run: |
           set -euo pipefail
-          if [[ -z "${KEYSTORE}" ]]; then
-            echo 'ERROR: Falta la firma histórica. No se permite generar una APK que no pueda actualizar la instalación actual.' >&2
+          if [[ -z "$KEYSTORE_B64" || -z "$PIOCA_KEYSTORE_PASSWORD" ]]; then
+            echo 'Faltan los dos Secrets de la firma permanente. Compilación detenida.' >&2
             exit 1
           fi
-          mkdir -p ~/.android
           umask 077
-          printf '%s' "$KEYSTORE" | base64 -d > ~/.android/debug.keystore
-          test -s ~/.android/debug.keystore
-      - name: Compilar APK y verificar certificado de actualización
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/pioca-firma.p12"
+          keytool -list -storetype PKCS12 -keystore "$RUNNER_TEMP/pioca-firma.p12" -storepass "$PIOCA_KEYSTORE_PASSWORD" -alias piocaempleado > /dev/null
+          echo "PIOCA_KEYSTORE_PATH=$RUNNER_TEMP/pioca-firma.p12" >> "$GITHUB_ENV"
+
+      - name: Compilar APK de producción y verificar el certificado
         shell: bash
-        env:
-          EXPECTED_CERT: ${{ secrets.PIOCA_RESPUESTAS_CERT_SHA256 }}
         run: |
           set -euo pipefail
-          if [[ -z "${EXPECTED_CERT}" ]]; then
-            echo 'ERROR: Falta PIOCA_RESPUESTAS_CERT_SHA256 con la huella de la APK instalada.' >&2
-            exit 1
-          fi
-          gradle :app:assembleDebug --no-daemon
-          APK=app/build/outputs/apk/debug/app-debug.apk
+          gradle :app:assembleRelease --no-daemon
+          APK=app/build/outputs/apk/release/app-release.apk
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -n 1)
+          test -n "$APKSIGNER"
           "$APKSIGNER" verify --verbose --print-certs "$APK"
           ACTUAL=$("$APKSIGNER" verify --print-certs "$APK" | awk -F': ' '/Signer #1 certificate SHA-256 digest/ {print $2}' | tr -d ':' | tr '[:upper:]' '[:lower:]')
-          EXPECTED=$(printf '%s' "$EXPECTED_CERT" | tr -d ': ' | tr '[:upper:]' '[:lower:]')
+          EXPECTED='5a2717700fec0d77b8c544d57eeb8f84f7154faa0b7bd43a28348a643303c40a'
           if [[ "$ACTUAL" != "$EXPECTED" ]]; then
-            echo 'ERROR: El certificado no coincide con la APK instalada. NO DISTRIBUIR.' >&2
+            echo 'Firma diferente a la firma permanente de piOca. No distribuir.' >&2
             exit 1
           fi
           cp "$APK" piOca-Empleado-IA-V3.apk
+
       - uses: actions/upload-artifact@v4
         with:
-          name: piOca-Empleado-IA-V3
+          name: piOca-Empleado-IA-V3-firmada
           path: piOca-Empleado-IA-V3.apk
           if-no-files-found: error
