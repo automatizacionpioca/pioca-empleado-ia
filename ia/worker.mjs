@@ -1,4 +1,4 @@
-// piOca® Empleado IA — Worker compatible con V5 Premium.
+// piOca® Empleado IA — Worker V6 Premium. Compatible con V5 para redacción.
 // Mantiene el contrato JSON y los secretos APP_TOKEN / OPENAI_API_KEY existentes.
 const INSTRUCCIONES = [
   'Sos el empleado de atención comercial y técnica de piOca®, empresa argentina de automatización de portones. Tu trabajo es REDACTAR EL MENSAJE FINAL PARA EL CLIENTE, nunca conversar con el operador sobre cómo lo vas a redactar.',
@@ -18,6 +18,38 @@ export default {
     if (!env.APP_TOKEN || !env.OPENAI_API_KEY) return new Response('Configurar secretos', {status: 503});
     if (request.headers.get('Authorization') !== 'Bearer ' + env.APP_TOKEN)
       return new Response('Acceso denegado', {status: 401});
+
+    // Ruta nueva. Mantiene intacta la ruta JSON principal de redacción V5.
+    if(new URL(request.url).pathname.replace(/\/+$/, '') === '/transcribir'){
+      const tipo=request.headers.get('Content-Type') || '';
+      if(!tipo.toLowerCase().includes('multipart/form-data'))
+        return new Response('Se necesita audio multipart', {status:415});
+      let entrada;
+      try{entrada=await request.formData();}
+      catch{return new Response('Audio inválido', {status:400});}
+      const audio=entrada.get('audio');
+      if(!audio || typeof audio.arrayBuffer !== 'function' || !audio.size)
+        return new Response('Falta el audio', {status:400});
+      if(audio.size>20*1024*1024)return new Response('Audio demasiado largo', {status:413});
+      const form=new FormData();
+      form.append('file',audio,'dictado.m4a');
+      form.append('model',env.OPENAI_TRANSCRIBE_MODEL || 'gpt-transcribe');
+      form.append('languages[]','es');
+      form.append('prompt','Dictado informal de un operador argentino sobre automatización de portones, presupuestos y servicio técnico. Transcribir literalmente lo dicho; no redactar ni responder al cliente.');
+      for(const termino of ['piOca','portón','corredizo','levadizo','batiente','brushless','piñón','cremallera','rulemanes','central electrónica'])
+        form.append('keywords[]',termino);
+      let resultado;
+      try{
+        resultado=await fetch('https://api.openai.com/v1/audio/transcriptions', {
+          method:'POST',headers:{Authorization:'Bearer '+env.OPENAI_API_KEY},body:form
+        });
+      }catch{return new Response('Error de conexión al transcribir', {status:502});}
+      if(!resultado.ok)return new Response('Servicio de transcripción: '+resultado.status,{status:502});
+      const dato=await resultado.json();
+      const texto=typeof dato.text==='string'?dato.text.trim():'';
+      if(!texto)return new Response('Transcripción vacía', {status:502});
+      return Response.json({text:texto},{headers:{'Cache-Control':'no-store'}});
+    }
 
     const raw = await request.text();
     if (raw.length > 60000) return new Response('Contexto demasiado largo', {status: 413});
