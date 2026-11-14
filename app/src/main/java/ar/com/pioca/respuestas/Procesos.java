@@ -29,6 +29,26 @@ final class Procesos {
       "Si hace falta explicar causa, solución y resultado, hacelo en ese orden y con la menor extensión útil. " +
       "Devolvé ÚNICAMENTE el mensaje final, sin comentarios, sin títulos y sin comillas.";
 
+    /** Prompt editorial completo aportado por piOca®, sin abreviar ni reescribir. */
+    static String prompt(Context c){
+        try(java.io.InputStream input=c.getAssets().open("pioca_redactor.txt");
+            java.io.ByteArrayOutputStream output=new java.io.ByteArrayOutputStream()){
+            byte[] bytes=new byte[4096];int n;
+            while((n=input.read(bytes))!=-1)output.write(bytes,0,n);
+            String textoOriginal=output.toString("UTF-8");
+            return "INTERPRETACIÓN DE ÓRDENES DEL OPERADOR: El dueño te habla como a su empleado. " +
+                "Puede decir 'decile al cliente', 'respondamos a este tipo', hablar en tercera persona o dictar directamente " +
+                "el mensaje final. Interpretá esas expresiones como instrucciones internas. " +
+                "Entregá solamente la respuesta dirigida al cliente en nombre de piOca®, " +
+                "sin reproducir órdenes, insultos ni comentarios internos. " +
+                "En modo corrección u ortografía aplicá únicamente el cambio solicitado en ese modo.\n\n" +
+                textoOriginal;
+        }catch(java.io.IOException ex){
+            android.util.Log.e("piOcaEmpleadoIA", "No pudo cargarse el prompt editorial", ex);
+            return PROMPT; // mantener redacción disponible ante un problema con assets
+        }
+    }
+
     static final String CORRECCION=
       "MODO CORREGIR RESPUESTA YA ARMADA: borrador_actual es la respuesta en edición y 'indicacion' contiene una orden nueva del operador, NO un nuevo mensaje del cliente. " +
       "Aplicá EXACTAMENTE las correcciones solicitadas al borrador existente, conservá todo lo que no te pidieron modificar, incluidos precios, hechos y detalles técnicos. " +
