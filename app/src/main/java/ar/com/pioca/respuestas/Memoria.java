@@ -113,6 +113,7 @@ final class Memoria {
         // El envío ya fue solicitado a WhatsApp; no fallar la pantalla por un error de guardado.
         datos(c).edit().putString(k,evento.toString()).apply();
         memoriaAprendida(c).edit().putString(k,resumenAprendido(evento).toString()).apply();
+        Resguardo.programar(c);
         return k;
     }
     static void procesoDeRespuesta(Context c,String clave,String categoria) {
@@ -195,6 +196,52 @@ final class Memoria {
             a.put(turno);
         }
         return a;
+    }
+    /** Copia portátil únicamente del aprendizaje y criterio empresarial, sin token API ni conversaciones sin aprobar. */
+    static String respaldoSoloAprendizajes(Context c)throws JSONException {
+        asegurarAprendizajes(c);
+        JSONObject doc=new JSONObject();
+        doc.put("formato","pioca-aprendizajes-1");
+        doc.put("fecha",System.currentTimeMillis());
+        for(String grupo:new String[]{"aprendizaje_v5","procesos","conocimiento_v4","categorias_v3"})
+            doc.put(grupo,new JSONObject(c.getSharedPreferences(grupo,0).getAll()));
+        return doc.toString();
+    }
+    /** Importación solo aditiva: nunca elimina aprendizajes ya existentes ni modifica la conexión. */
+    static int restaurarSoloAprendizajes(Context c,String json)throws JSONException {
+        JSONObject doc=new JSONObject(json);
+        String formato=doc.optString("formato");
+        if(!"pioca-aprendizajes-1".equals(formato)&&!"piOca-respuestas-3".equals(formato)
+           &&!"piOca-respuestas-2".equals(formato))
+            throw new JSONException("Formato de respaldo no compatible");
+        String[] grupos={"aprendizaje_v5","procesos","conocimiento_v4","categorias_v3"};
+        // Validar todo antes de hacer escrituras para evitar recuperaciones parciales por formato incorrecto.
+        for(String grupo:grupos){
+            JSONObject parte=doc.optJSONObject(grupo);if(parte==null)continue;
+            for(Iterator<String> it=parte.keys();it.hasNext();){
+                String clave=it.next();
+                if(!(parte.opt(clave) instanceof String))throw new JSONException("Dato inválido en "+grupo);
+            }
+        }
+        int nuevos=0;
+        for(String grupo:grupos){
+            JSONObject parte=doc.optJSONObject(grupo);if(parte==null)continue;
+            SharedPreferences p=c.getSharedPreferences(grupo,0);
+            SharedPreferences.Editor ed=p.edit();
+            for(Iterator<String> it=parte.keys();it.hasNext();){
+                String clave=it.next();
+                if(p.contains(clave))continue; // No pisar el aprendizaje más reciente.
+                String valor=parte.optString(clave);
+                if("aprendizaje_v5".equals(grupo)){
+                    try{JSONObject e=new JSONObject(valor);if(!"aprobado".equals(e.optString("tipo")))continue;}
+                    catch(JSONException ignored){continue;}
+                    nuevos++;
+                }
+                ed.putString(clave,valor);
+            }
+            if(!ed.commit())throw new JSONException("No se pudo guardar el grupo "+grupo);
+        }
+        return nuevos;
     }
     static final String[] grupos={"procesos","archivo","borradores","categorias_v3","archivados_v3","conocimiento_v4","aprendizaje_v5"};
     static String respaldo(Context c)throws JSONException {

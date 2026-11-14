@@ -3,17 +3,16 @@ package ar.com.pioca.respuestas;
 import android.app.*;
 import android.content.*;
 import android.graphics.Color;
-import android.content.res.ColorStateList;
-import android.os.Handler;
-import android.os.Looper;
-import android.os.SystemClock;
-import android.view.inputmethod.InputMethodManager;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.media.MediaRecorder;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
+import android.view.inputmethod.InputMethodManager;
 import android.provider.Settings;
 import android.speech.RecognizerIntent;
 import android.speech.tts.TextToSpeech;
@@ -32,12 +31,10 @@ import java.text.Normalizer;
 import java.util.regex.*;
 import java.util.*;
 
-/** piOca® Empleado IA Premium V8. Reconstruida sobre la base estable V6. */
+/** piOca® Empleado IA V9. Editor visual V6 estable; resguardo externo de aprendizajes. */
 public class Panel extends Activity {
     static final int NAVY=Color.rgb(20,33,51),GREEN=Color.rgb(11,117,90),BG=Color.rgb(246,248,250);
     static final int MUTED=Color.rgb(101,115,127),BORDER=Color.rgb(220,228,234);
-    static final int IA_DARK=Color.rgb(29,57,91),IA_BLUE=Color.rgb(44,100,151);
-    static final int MIC_GREEN=Color.rgb(37,211,102),MIC_RED=Color.rgb(211,55,65);
     LinearLayout root,body,container;
     ScrollView scroll;
     EditText indicacion,resultado,correccion;
@@ -46,14 +43,14 @@ public class Panel extends Activity {
     TextToSpeech lector;
     boolean lectorListo=false;
     String lecturaPendiente=null;
-    static final String ID_LECTURA="pioca-v8-respuesta";
+    static final String ID_LECTURA="pioca-v9-respuesta";
     static final int PERMISO_MIC=310;
     static final long AUDIO_MAX_BYTES=20L*1024*1024;
     MediaRecorder grabador;
     File grabacionActual;
     AlertDialog dialogoGrabacion;
     TextView contadorGrabacion;
-    long inicioGrabacion=0L;
+    long inicioGrabacion;
     final Handler relojGrabacion=new Handler(Looper.getMainLooper());
     Runnable tareaReloj;
     int tipoGrabacion=200, tipoPendiente=200;
@@ -65,11 +62,39 @@ public class Panel extends Activity {
     int ultimaSolicitud=0;
     final int VOZ=200, VOZ_CORRECCION=201;
 
-    @Override public void onCreate(Bundle state){super.onCreate(state);mostrarBandeja(false);}
+    @Override public void onCreate(Bundle state){
+        super.onCreate(state);
+        instalarDiagnostico();
+        mostrarBandeja(false);
+        Resguardo.programar(this);
+    }
+    void instalarDiagnostico(){
+        final Thread.UncaughtExceptionHandler anterior=Thread.getDefaultUncaughtExceptionHandler();
+        if(anterior!=null && anterior.getClass().getName().contains("pioca"))return;
+        Thread.setDefaultUncaughtExceptionHandler((h,error)->{
+            try{
+                getSharedPreferences("diagnostico_errores",0).edit()
+                    .putString("ultimo",android.util.Log.getStackTraceString(error))
+                    .putLong("hora",System.currentTimeMillis()).commit();
+            }catch(Throwable ignored){}
+            if(anterior!=null)anterior.uncaughtException(h,error);
+        });
+    }
+    void mostrarUltimoError(){
+        String error=getSharedPreferences("diagnostico_errores",0).getString("ultimo","");
+        if(error.isEmpty()){aviso("No hay un error registrado desde la última instalación.");return;}
+        String detalle=error.length()>12000?error.substring(0,12000):error;
+        new AlertDialog.Builder(this).setTitle("Diagnóstico de cierre")
+           .setMessage(detalle)
+           .setPositiveButton("Copiar diagnóstico",(d,n)->{
+               android.content.ClipboardManager cb=(android.content.ClipboardManager)getSystemService(CLIPBOARD_SERVICE);
+               if(cb!=null)cb.setPrimaryClip(ClipData.newPlainText("Error Empleado IA",detalle));
+               aviso("Diagnóstico copiado. Podés enviármelo para revisar el error exacto.");
+           }).setNegativeButton("Cerrar",null).show();
+    }
     @Override protected void onResume(){
         super.onResume();
         Bandeja.cambio=()->runOnUiThread(()->{
-            if(isDestroyed()||isFinishing())return;
             if(hiloActual==null)mostrarBandeja(mostrandoArchivados);
             else if(!revisarNuevaConsulta())actualizarEnvio();
         });
@@ -85,7 +110,7 @@ public class Panel extends Activity {
         super.onStop();
     }
     @Override protected void onDestroy(){
-        pararContador();
+        detenerContador();
         if(grabador!=null)finalizarDictado(false);
         if(lector!=null){lector.stop();lector.shutdown();lector=null;}
         super.onDestroy();
@@ -166,113 +191,6 @@ public class Panel extends Activity {
         b.setPadding(dp(12),dp(5),dp(12),dp(5));b.setOnClickListener(v->click.run());return b;
     }
     void aviso(String s){Toast.makeText(this,s,Toast.LENGTH_LONG).show();}
-    /** Dibujo vectorial nativo de Android: sin View personalizada ni canvas de V7. */
-    ImageView botonMicrofono(boolean grabando,String descripcion,Runnable accion){
-        ImageView mic=new ImageView(this);
-        mic.setImageResource(R.drawable.ic_microfono_pioca);
-        mic.setImageTintList(ColorStateList.valueOf(grabando?Color.WHITE:Color.BLACK));
-        mic.setBackground(fondo(grabando?MIC_RED:MIC_GREEN,300,0));
-        mic.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        mic.setPadding(dp(12),dp(12),dp(12),dp(12));
-        mic.setContentDescription(descripcion);
-        mic.setClickable(true);
-        mic.setFocusable(true);
-        mic.setOnClickListener(v->accion.run());
-        return mic;
-    }
-    /** Flechas agregadas como HERMANOS del EditText original, sin anidar el editor de V6. */
-    LinearLayout flechasTexto(EditText campo){
-        campo.setVerticalScrollBarEnabled(true);
-        campo.setScrollbarFadingEnabled(false);
-        LinearLayout flechas=linear(true);
-        flechas.setPadding(dp(3),0,0,0);
-        Button arriba=boton("▲",NAVY,false,()->desplazarTexto(campo,-1));
-        Button abajo=boton("▼",NAVY,false,()->desplazarTexto(campo,1));
-        arriba.setTextSize(16);abajo.setTextSize(16);
-        arriba.setContentDescription("Subir dentro del texto");
-        abajo.setContentDescription("Bajar dentro del texto");
-        flechas.addView(arriba,lp(38,43));
-        flechas.addView(abajo,margen(38,43,0,5,0,0));
-        return flechas;
-    }
-    void desplazarTexto(EditText campo,int direccion){
-        if(campo==null)return;
-        campo.post(()->{
-            android.text.Layout layout=campo.getLayout();
-            if(layout==null)return;
-            int alto=Math.max(0,campo.getHeight()-campo.getTotalPaddingTop()-campo.getTotalPaddingBottom());
-            if(alto<=0)return;
-            int max=Math.max(0,layout.getHeight()-alto);
-            int paso=Math.max(dp(64),Math.round(alto*0.75f));
-            campo.scrollTo(0,Math.max(0,Math.min(max,campo.getScrollY()+direccion*paso)));
-        });
-    }
-    void diagnosticoApertura(Throwable error){
-        android.util.Log.e("piOcaEmpleadoIA","Error al abrir conversación",error);
-        getSharedPreferences("diagnostico_v8",0).edit()
-            .putString("error_pantalla",android.util.Log.getStackTraceString(error))
-            .putLong("hora",System.currentTimeMillis()).apply();
-    }
-    /** Rescate operativo: editor mínimo si Android no puede inflar una vista adicional. */
-    void mostrarConversacionRescate(){
-        detenerLectura();botonLectura=null;
-        empezar("‹  "+clienteActual+" · Vista compatible");
-        container.addView(boton("‹ Volver a Pendientes",NAVY,false,()->mostrarBandeja(false)),margen(-1,44,0,0,0,12));
-        LinearLayout historial=card();
-        historial.addView(texto("Últimos mensajes",16,NAVY,true));
-        List<JSONObject> ev=Memoria.eventos(this,hiloActual);
-        for(int i=Math.max(0,ev.size()-25);i<ev.size();i++){
-            JSONObject e=ev.get(i);
-            historial.addView(texto(("aprobado".equals(e.optString("tipo"))?"piOca®: ":"Cliente: ")+e.optString("mensaje"),14,NAVY,false),margen(-1,-2,0,7,0,0));
-        }
-        container.addView(historial,margen(-1,-2,0,0,0,12));
-        LinearLayout panel=card();
-        panel.addView(texto("Tu indicación",16,NAVY,true));
-        indicacion=new EditText(this);indicacion.setMinLines(3);indicacion.setMaxLines(7);
-        panel.addView(indicacion,lp(-1,-2));
-        panel.addView(boton("Dictar indicación",NAVY,false,()->dictar(VOZ)),margen(-1,42,0,8,0,0));
-        panel.addView(boton("Redactar profesionalmente",IA_DARK,true,()->generar("redactar")),margen(-1,48,0,9,0,0));
-        container.addView(panel,margen(-1,-2,0,0,0,12));
-        LinearLayout editor=card();editor.addView(texto("Respuesta para el cliente",16,NAVY,true));
-        resultado=new EditText(this);resultado.setMinLines(5);resultado.setMaxLines(14);
-        resultado.setText(getSharedPreferences("borradores",0).getString(claveBorrador(),""));
-        editor.addView(resultado,lp(-1,-2));
-        botonLectura=boton("▶ Escuchar respuesta",NAVY,false,this::escucharRespuesta);
-        editor.addView(botonLectura,margen(-1,44,0,8,0,0));
-        editor.addView(texto("Corregir respuesta",16,NAVY,true),margen(-1,-2,0,10,0,0));
-        correccion=new EditText(this);correccion.setMinLines(3);correccion.setMaxLines(6);
-        editor.addView(correccion,lp(-1,-2));
-        editor.addView(boton("Dictar correcciones",NAVY,false,()->dictar(VOZ_CORRECCION)),margen(-1,43,0,8,0,0));
-        editor.addView(boton("Aplicar correcciones con IA",IA_BLUE,true,()->generar("correccion")),margen(-1,48,0,8,0,0));
-        editor.addView(boton("Revalidar ortografía",NAVY,false,()->generar("ortografia")),margen(-1,43,0,8,0,0));
-        enviar=boton("ENVIAR WHATSAPP",GREEN,true,this::mandar);
-        editor.addView(enviar,margen(-1,55,0,10,0,0));
-        estado=texto("",12,MUTED,false);editor.addView(estado);
-        botonProceso=boton("Proceso: "+procesoActual,NAVY,false,()->elegirProceso(false,null));
-        editor.addView(botonProceso,margen(-1,43,0,10,0,0));
-        container.addView(editor,margen(-1,-2,0,0,0,12));
-        resultado.addTextChangedListener(new TextWatcher(){
-            public void beforeTextChanged(CharSequence s,int start,int count,int after){}
-            public void onTextChanged(CharSequence s,int start,int before,int count){
-                getSharedPreferences("borradores",0).edit().putString(claveBorrador(),s.toString()).apply();
-                actualizarEnvio();
-            }
-            public void afterTextChanged(Editable s){}
-        });
-        actualizarEnvio();
-    }
-    void mostrarConversacionSegura(){
-        try{mostrarConversacion();}
-        catch(RuntimeException | LinkageError error){
-            diagnosticoApertura(error);
-            try{mostrarConversacionRescate();}
-            catch(RuntimeException | LinkageError rescate){
-                diagnosticoApertura(rescate);
-                mostrarBandeja(false);
-                aviso("No se pudo mostrar la conversación. Tus mensajes se conservaron.");
-            }
-        }
-    }
     LinearLayout card(){LinearLayout c=linear(true);c.setPadding(dp(14),dp(13),dp(14),dp(13));
         c.setBackground(fondo(Color.WHITE,16,BORDER));return c;}
     void empezar(String subtitulo){
@@ -282,7 +200,7 @@ public class Panel extends Activity {
         ImageView logo=new ImageView(this);logo.setImageResource(R.drawable.marca);logo.setScaleType(ImageView.ScaleType.FIT_CENTER);
         barra.addView(logo,lp(39,39));
         LinearLayout marca=linear(true);
-        marca.addView(texto("piOca®",15,NAVY,true));marca.addView(texto("Empleado IA · Premium V8",12,MUTED,false));
+        marca.addView(texto("piOca®",15,NAVY,true));marca.addView(texto("Empleado IA · V9 · Memoria protegida",12,MUTED,false));
         barra.addView(marca,margen(0,-2,7,0,0,0));
         Space espacio=new Space(this);barra.addView(espacio,new LinearLayout.LayoutParams(0,1,1));
         TextView options=texto("⚙",23,NAVY,false);options.setGravity(Gravity.CENTER);options.setContentDescription("Configuración");
@@ -309,6 +227,19 @@ public class Panel extends Activity {
         tabs.addView(t1,new LinearLayout.LayoutParams(0,-2,1));tabs.addView(t2,new LinearLayout.LayoutParams(0,-2,1));
         t1.setOnClickListener(v->mostrarBandeja(false));t2.setOnClickListener(v->mostrarBandeja(true));
         container.addView(tabs,lp(-1,-2));
+        LinearLayout memoria=card();
+        boolean respaldoConfigurado=Resguardo.configurado(this);
+        String estadoCopia=Resguardo.estado(this);
+        memoria.addView(texto(respaldoConfigurado?"Memoria protegida · Copias automáticas":"Memoria sin respaldo externo",14,
+            respaldoConfigurado?GREEN:Color.rgb(153,61,35),true));
+        memoria.addView(texto(estadoCopia,12,MUTED,false),margen(-1,-2,0,5,0,7));
+        LinearLayout botonesMemoria=linear(false);
+        Button proteger=boton(respaldoConfigurado?"Cambiar carpeta":"Activar respaldo",GREEN,false,this::elegirCarpetaProteccion);
+        botonesMemoria.addView(proteger,new LinearLayout.LayoutParams(0,dp(44),1));
+        Button recuperar=boton("Restaurar",NAVY,false,this::elegirArchivoAprendizajes);
+        botonesMemoria.addView(recuperar,margen(112,44,8,0,0,0));
+        memoria.addView(botonesMemoria,lp(-1,-2));
+        container.addView(memoria,margen(-1,-2,0,8,0,12));
         String estadoCaptura=Bandeja.conectado?
             (Bandeja.ultimoAviso>0?"✓ Notificaciones activas · Última recepción: "+new SimpleDateFormat("HH:mm",new Locale("es","AR")).format(new Date(Bandeja.ultimoAviso)):
             "✓ Acceso a notificaciones conectado"):
@@ -434,7 +365,7 @@ public class Panel extends Activity {
         primerBorrador="";propuestaAI="";ultimaIndicacion="";historialCorrecciones="";
         marcaConsulta=h.recibido;
         procesoActual=Procesos.clasificar(consultaActual);
-        mostrarConversacionSegura();
+        mostrarConversacion();
     }
     /** Si llega una pregunta nueva durante el editor, abrir un borrador específico para ella. */
     boolean revisarNuevaConsulta(){
@@ -448,7 +379,7 @@ public class Panel extends Activity {
                 procesoActual=Procesos.clasificar(consultaActual);
                 primerBorrador="";propuestaAI="";ultimaIndicacion="";historialCorrecciones="";
                 ultimaSolicitud++;
-                mostrarConversacionSegura();
+                mostrarConversacion();
                 aviso("Llegó una consulta nueva. Editor preparado para esta pregunta.");
                 return true;
             }
@@ -473,8 +404,7 @@ public class Panel extends Activity {
         LinearLayout historial=card();
         historial.addView(texto("Conversación registrada",16,NAVY,true),margen(-1,-2,0,0,0,11));
         List<JSONObject> eventos=Memoria.eventos(this,hiloActual);
-        // Muestra los últimos 50 intercambios; el historial completo continúa guardado.
-        int start=Math.max(0,eventos.size()-50);
+        int start=0;
         for(int i=start;i<eventos.size();i++){
             JSONObject e=eventos.get(i);boolean esMia="aprobado".equals(e.optString("tipo"));
             TextView cab=texto(esMia?"piOca® · enviada":"Cliente",11,esMia?GREEN:MUTED,true);
@@ -503,10 +433,9 @@ public class Panel extends Activity {
         indicacion.setBackground(fondo(BG,11,BORDER));indicacion.setPadding(dp(11),dp(10),dp(11),dp(10));
         indicacion.setHint("Dictá tu respuesta o escribila...");indicacion.setMinLines(3);indicacion.setMaxLines(7);
         fila.addView(indicacion,new LinearLayout.LayoutParams(0,-2,1));
-        fila.addView(flechasTexto(indicacion),margen(42,-2,2,0,2,0));
-        ImageView voz=botonMicrofono(false,"Dictar indicación por voz",()->dictar(VOZ));
-        fila.addView(voz,margen(55,55,5,0,0,0));indicaciones.addView(fila);
-        Button mejorar=boton("✦  Redactar profesionalmente",IA_DARK,true,()->generar("redactar"));
+        Button voz=boton("🎙",GREEN,true,()->dictar(VOZ));voz.setContentDescription("Dictar indicación por voz");
+        fila.addView(voz,margen(54,56,7,0,0,0));indicaciones.addView(fila);
+        Button mejorar=boton("✦  Redactar profesionalmente",GREEN,true,()->generar("redactar"));
         indicaciones.addView(mejorar,margen(-1,48,0,12,0,0));
         container.addView(indicaciones,margen(-1,-2,0,0,0,14));
         LinearLayout editor=card();editor.addView(texto("Respuesta para el cliente",16,NAVY,true));
@@ -517,10 +446,7 @@ public class Panel extends Activity {
         resultado.setHint("Aquí aparecerá la redacción profesional...");
         String memoriaBorrador=getSharedPreferences("borradores",0).getString(claveBorrador(),"");
         if(!memoriaBorrador.isEmpty())resultado.setText(memoriaBorrador);
-        LinearLayout filaRespuesta=linear(false);filaRespuesta.setGravity(Gravity.TOP);
-        filaRespuesta.addView(resultado,new LinearLayout.LayoutParams(0,-2,1));
-        filaRespuesta.addView(flechasTexto(resultado),margen(42,-2,5,0,0,0));
-        editor.addView(filaRespuesta,lp(-1,-2));
+        editor.addView(resultado,lp(-1,-2));
         botonLectura=boton("▶ Escuchar respuesta",NAVY,false,this::escucharRespuesta);
         botonLectura.setContentDescription("Reproducir en voz alta la respuesta para el cliente");
         editor.addView(botonLectura,margen(-1,44,0,10,0,0));
@@ -542,11 +468,11 @@ public class Panel extends Activity {
         correccion.setHint("Ej.: Sacá el último párrafo y aclará que necesitamos una foto del portón completo.");
         correccion.setMinLines(3);correccion.setMaxLines(6);
         filaCorreccion.addView(correccion,new LinearLayout.LayoutParams(0,-2,1));
-        filaCorreccion.addView(flechasTexto(correccion),margen(42,-2,2,0,2,0));
-        ImageView micCorreccion=botonMicrofono(false,"Dictar correcciones al mensaje ya armado",()->dictar(VOZ_CORRECCION));
-        filaCorreccion.addView(micCorreccion,margen(55,55,5,0,0,0));
+        Button micCorreccion=boton("🎙",GREEN,true,()->dictar(VOZ_CORRECCION));
+        micCorreccion.setContentDescription("Dictar correcciones al mensaje ya armado");
+        filaCorreccion.addView(micCorreccion,margen(54,56,7,0,0,0));
         ajuste.addView(filaCorreccion);
-        Button aplicar=boton("✦ Aplicar correcciones con IA",IA_BLUE,true,()->generar("correccion"));
+        Button aplicar=boton("✦ Aplicar correcciones con IA",GREEN,true,()->generar("correccion"));
         ajuste.addView(aplicar,margen(-1,48,0,12,0,0));
         editor.addView(ajuste,margen(-1,-2,0,12,0,6));
         Button orto=boton("✓ Revalidar solo ortografía",NAVY,false,()->generar("ortografia"));
@@ -785,63 +711,6 @@ public class Panel extends Activity {
             aviso("No se pudo iniciar el micrófono: "+ex.getMessage());
         }
     }
-    /** Panel premium con contador. El audio se graba localmente hasta finalizar. */
-    void mostrarPanelGrabacion(){
-        View foco=getCurrentFocus();
-        if(foco!=null){
-            InputMethodManager teclado=(InputMethodManager)getSystemService(INPUT_METHOD_SERVICE);
-            if(teclado!=null)teclado.hideSoftInputFromWindow(foco.getWindowToken(),0);
-            foco.clearFocus();
-        }
-        LinearLayout panel=linear(true);panel.setPadding(dp(22),dp(24),dp(22),dp(24));
-        panel.setGravity(Gravity.CENTER_HORIZONTAL);
-        TextView titulo=texto("Dictado de instrucciones",19,NAVY,true);
-        titulo.setGravity(Gravity.CENTER);panel.addView(titulo,margen(-1,-2,0,0,0,10));
-        TextView estadoActivo=texto("●  GRABANDO · MICRÓFONO ACTIVO",12,MIC_RED,true);
-        estadoActivo.setGravity(Gravity.CENTER);panel.addView(estadoActivo,margen(-1,-2,0,0,0,12));
-        contadorGrabacion=texto("00:00",35,NAVY,true);
-        contadorGrabacion.setGravity(Gravity.CENTER);
-        contadorGrabacion.setTypeface(Typeface.MONOSPACE,Typeface.BOLD);
-        panel.addView(contadorGrabacion,margen(-1,-2,0,0,0,14));
-        ImageView mic=botonMicrofono(true,"Detener y transcribir",()->terminarDesdePanel(true));
-        mic.setPadding(dp(25),dp(25),dp(25),dp(25));
-        panel.addView(mic,margen(104,104,0,0,0,12));
-        TextView leyenda=texto("Tocá el micrófono rojo para finalizar",13,NAVY,true);
-        leyenda.setGravity(Gravity.CENTER);panel.addView(leyenda,margen(-1,-2,0,0,0,4));
-        TextView ayuda=texto("Podés hacer pausas largas. La grabación no se corta por silencio.",12,MUTED,false);
-        ayuda.setGravity(Gravity.CENTER);panel.addView(ayuda,margen(-1,-2,0,0,0,16));
-        Button terminar=boton("■  DETENER Y TRANSCRIBIR",IA_DARK,true,()->terminarDesdePanel(true));
-        terminar.setTextSize(15);panel.addView(terminar,margen(-1,53,0,0,0,9));
-        Button cancelar=boton("Cancelar grabación",NAVY,false,()->terminarDesdePanel(false));
-        panel.addView(cancelar,lp(-1,47));
-        dialogoGrabacion=new AlertDialog.Builder(this).setView(panel).setCancelable(false).create();
-        dialogoGrabacion.show();
-        inicioGrabacion=SystemClock.elapsedRealtime();
-        actualizarContador();
-    }
-    void actualizarContador(){
-        if(tareaReloj!=null){relojGrabacion.removeCallbacks(tareaReloj);tareaReloj=null;}
-        tareaReloj=new Runnable(){
-            @Override public void run(){
-                if(grabador==null||contadorGrabacion==null)return;
-                long seg=(SystemClock.elapsedRealtime()-inicioGrabacion)/1000;
-                contadorGrabacion.setText(String.format(Locale.ROOT,"%02d:%02d",seg/60,seg%60));
-                relojGrabacion.postDelayed(this,300);
-            }
-        };
-        relojGrabacion.post(tareaReloj);
-    }
-    void pararContador(){
-        if(tareaReloj!=null){relojGrabacion.removeCallbacks(tareaReloj);tareaReloj=null;}
-        contadorGrabacion=null;
-    }
-    void cerrarPanelGrabacion(){
-        pararContador();
-        if(dialogoGrabacion!=null){AlertDialog actual=dialogoGrabacion;dialogoGrabacion=null;actual.dismiss();}
-    }
-    void terminarDesdePanel(boolean transcribir){
-        cerrarPanelGrabacion();finalizarDictado(transcribir);
-    }
     void finalizarDictado(boolean transcribir){
         if(grabador==null||grabacionFinalizando)return;
         grabacionFinalizando=true;
@@ -921,10 +790,95 @@ public class Panel extends Activity {
             }
         }).start();
     }
+    /** El diseño de grabación no se crea hasta que el usuario toca el micrófono. */
+    void mostrarPanelGrabacion(){
+        View foco=getCurrentFocus();
+        if(foco!=null){
+            InputMethodManager teclado=(InputMethodManager)getSystemService(INPUT_METHOD_SERVICE);
+            if(teclado!=null)teclado.hideSoftInputFromWindow(foco.getWindowToken(),0);
+        }
+        LinearLayout panel=linear(true);panel.setPadding(dp(22),dp(18),dp(22),dp(18));
+        panel.setGravity(Gravity.CENTER_HORIZONTAL);
+        TextView titulo=texto("Grabación en curso",20,NAVY,true);
+        titulo.setGravity(Gravity.CENTER);panel.addView(titulo,margen(-1,-2,0,0,0,9));
+        TextView activo=texto("● MICRÓFONO ACTIVO",13,Color.rgb(211,55,65),true);
+        activo.setGravity(Gravity.CENTER);panel.addView(activo,margen(-1,-2,0,0,0,10));
+        contadorGrabacion=texto("00:00",35,NAVY,true);
+        contadorGrabacion.setGravity(Gravity.CENTER);
+        contadorGrabacion.setTypeface(Typeface.MONOSPACE,Typeface.BOLD);
+        panel.addView(contadorGrabacion,margen(-1,-2,0,0,0,12));
+        TextView simbolo=texto("🎙",52,Color.WHITE,true);simbolo.setGravity(Gravity.CENTER);
+        simbolo.setBackground(fondo(Color.rgb(211,55,65),100,0));
+        simbolo.setOnClickListener(v->terminarDesdePanel(true));
+        panel.addView(simbolo,margen(98,98,0,0,0,12));
+        TextView mensaje=texto("Podés hacer pausas largas. Tocá el micrófono rojo o Detener para transcribir.",13,MUTED,false);
+        mensaje.setGravity(Gravity.CENTER);panel.addView(mensaje,margen(-1,-2,0,0,0,15));
+        panel.addView(boton("■ DETENER Y TRANSCRIBIR",NAVY,true,()->terminarDesdePanel(true)),lp(-1,52));
+        panel.addView(boton("Cancelar grabación",NAVY,false,()->terminarDesdePanel(false)),margen(-1,44,0,9,0,0));
+        dialogoGrabacion=new AlertDialog.Builder(this).setView(panel).setCancelable(false).create();
+        dialogoGrabacion.show();
+        inicioGrabacion=SystemClock.elapsedRealtime();
+        tareaReloj=new Runnable(){
+            @Override public void run(){
+                if(grabador==null||contadorGrabacion==null)return;
+                long segundos=(SystemClock.elapsedRealtime()-inicioGrabacion)/1000;
+                contadorGrabacion.setText(String.format(Locale.ROOT,"%02d:%02d",segundos/60,segundos%60));
+                relojGrabacion.postDelayed(this,300);
+            }
+        };
+        relojGrabacion.post(tareaReloj);
+    }
+    void detenerContador(){
+        if(tareaReloj!=null){relojGrabacion.removeCallbacks(tareaReloj);tareaReloj=null;}
+        contadorGrabacion=null;
+    }
+    void cerrarPanelGrabacion(){
+        detenerContador();
+        if(dialogoGrabacion!=null){AlertDialog anterior=dialogoGrabacion;dialogoGrabacion=null;anterior.dismiss();}
+    }
+    void terminarDesdePanel(boolean transcribir){cerrarPanelGrabacion();finalizarDictado(transcribir);}
+    void elegirCarpetaProteccion(){
+        new AlertDialog.Builder(this).setTitle("Proteger aprendizajes")
+            .setMessage("Elegí una carpeta fuera de los datos de la aplicación, por ejemplo Documentos/piOca-IA. " +
+                "Empleado IA guardará copias alternadas A y B cada vez que apruebes una respuesta. " +
+                "Esa carpeta puede contener información de clientes: no la compartas públicamente. " +
+                "Si Android borra los datos de la app, podrás restaurar los archivos desde aquí.")
+            .setNegativeButton("Cancelar",null)
+            .setPositiveButton("Elegir carpeta",(d,n)->{
+                Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+                i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION |
+                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+                startActivityForResult(i,60);
+            }).show();
+    }
+    void elegirArchivoAprendizajes(){
+        Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);i.setType("application/json");
+        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        startActivityForResult(i,61);
+    }
     @Override protected void onActivityResult(int request,int result,Intent data){
         super.onActivityResult(request,result,data);
         if(result!=RESULT_OK||data==null)return;
-        if(request==VOZ||request==VOZ_CORRECCION){
+        if(request==60){
+            try{
+                Uri carpeta=data.getData();
+                if(carpeta==null)throw new IOException("No se eligió ninguna carpeta.");
+                getContentResolver().takePersistableUriPermission(carpeta,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                Resguardo.configurar(this,carpeta);
+                mostrarBandeja(false);
+                aviso("Carpeta configurada. Creando copias de aprendizaje A y B.");
+            }catch(Exception ex){aviso("No se pudo activar la protección: "+ex.getMessage());}
+        }else if(request==61){
+            try(InputStream is=getContentResolver().openInputStream(data.getData())){
+                if(is==null)throw new IOException("No se pudo leer el respaldo.");
+                int nuevos=Memoria.restaurarSoloAprendizajes(this,leer(is,24*1024*1024));
+                Resguardo.programar(this);
+                mostrarBandeja(false);
+                aviso("Aprendizajes restaurados: "+nuevos+" respuestas nuevas.");
+            }catch(Exception ex){aviso("Error de restauración: "+ex.getMessage());}
+        }else if(request==VOZ||request==VOZ_CORRECCION){
             ArrayList<String> frases=data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
             EditText destino=request==VOZ?indicacion:correccion;
             if(frases!=null&&!frases.isEmpty()&&destino!=null){
@@ -944,10 +898,11 @@ public class Panel extends Activity {
         }
     }
     void ajustes(){
-        String[] opciones={"Conexión con OpenAI","Acceso a notificaciones","Conocimiento piOca® por segmento","Procesos y reglas","Exportar memoria","Restaurar memoria"};
+        String[] opciones={"Conexión con OpenAI","Acceso a notificaciones","Conocimiento piOca® por segmento","Procesos y reglas","Exportar memoria","Restaurar memoria","Protección automática de aprendizajes","Recuperar aprendizajes","Ver último cierre (diagnóstico)"};
         new AlertDialog.Builder(this).setTitle("Configuración").setItems(opciones,(d,n)->{
             if(n==0)conectar();else if(n==1)startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS));
-            else if(n==2)conocimiento();else if(n==3)reglas();else if(n==4)respaldo(true);else respaldo(false);
+            else if(n==2)conocimiento();else if(n==3)reglas();else if(n==4)respaldo(true);else if(n==5)respaldo(false);
+            else if(n==6)elegirCarpetaProteccion();else if(n==7)elegirArchivoAprendizajes();else mostrarUltimoError();
         }).show();
     }
     void conectar(){

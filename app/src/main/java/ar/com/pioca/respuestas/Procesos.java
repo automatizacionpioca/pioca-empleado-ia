@@ -67,7 +67,7 @@ final class Procesos {
     static boolean agregar(Context c,String nombre){
         nombre=nombre.trim();if(nombre.length()<3||nombre.length()>80)return false;
         for(String v:nombres(c))if(v.equalsIgnoreCase(nombre))return false;
-        c.getSharedPreferences("categorias_v3",0).edit().putString(UUID.randomUUID().toString(),nombre).apply();return true;
+        c.getSharedPreferences("categorias_v3",0).edit().putString(UUID.randomUUID().toString(),nombre).apply();Resguardo.programar(c);return true;
     }
     static String limpiar(String t){
         return Normalizer.normalize(t.toLowerCase(Locale.ROOT),Normalizer.Form.NFD).replaceAll("\\p{M}","");
@@ -93,7 +93,7 @@ final class Procesos {
         for(int i=0;i<viejos.length;i++)if(viejos[i].equals(categoria))regla += "\n"+p.getString("regla."+i,"");
         return regla;
     }
-    static void guardarRegla(Context c,String categoria,String regla){c.getSharedPreferences("procesos",0).edit().putString("regla.v3."+categoria,regla).apply();}
+    static void guardarRegla(Context c,String categoria,String regla){c.getSharedPreferences("procesos",0).edit().putString("regla.v3."+categoria,regla).apply();Resguardo.programar(c);}
     /** Conocimiento oficial: puede editarse en ajustes, nunca se aprende de una única corrección por defecto. */
     static String conocimientoBase(String categoria){
         switch(categoria){
@@ -113,7 +113,7 @@ final class Procesos {
         return c.getSharedPreferences("conocimiento_v4",0).getString(categoria,conocimientoBase(categoria));
     }
     static void guardarConocimiento(Context c,String categoria,String texto){
-        c.getSharedPreferences("conocimiento_v4",0).edit().putString(categoria,texto).apply();
+        c.getSharedPreferences("conocimiento_v4",0).edit().putString(categoria,texto).apply();Resguardo.programar(c);
     }
     static String instrucciones(Context c,String categoria){return "SEGMENTO ACTUAL: "+categoria+".\nCONOCIMIENTO EMPRESARIAL APROBADO:\n"+conocimiento(c,categoria)+"\nREGLAS PERSONALIZADAS:\n"+regla(c,categoria);}
 
