@@ -3,6 +3,7 @@ package ar.com.pioca.respuestas;
 import android.app.*;
 import android.content.*;
 import android.os.Bundle;
+import android.os.Build;
 import android.service.notification.*;
 import java.util.*;
 
@@ -12,6 +13,38 @@ public class Bandeja extends NotificationListenerService {
     static Runnable cambio;
     static volatile boolean conectado=false;
     static volatile long ultimoAviso=0;
+    static volatile Bandeja instancia;
+    static volatile long ultimaReconexion=0;
+
+    static boolean accesoConcedido(Context ctx){
+        ComponentName cn=new ComponentName(ctx,Bandeja.class);
+        if(Build.VERSION.SDK_INT>=27){
+            NotificationManager n=(NotificationManager)ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+            return n!=null&&n.isNotificationListenerAccessGranted(cn);
+        }
+        String enabled=android.provider.Settings.Secure.getString(ctx.getContentResolver(),
+            "enabled_notification_listeners");
+        return enabled!=null&&enabled.contains(cn.flattenToString());
+    }
+    /** Recuperación al abrir la app; no depende de que la pantalla quede encendida. */
+    static void recuperar(Context ctx){
+        if(!accesoConcedido(ctx)){conectado=false;avisar();return;}
+        Bandeja listener=instancia;
+        if(listener!=null&&conectado){listener.recuperarActivas();return;}
+        long ahora=System.currentTimeMillis();
+        if(ahora-ultimaReconexion<15000)return;
+        ultimaReconexion=ahora;
+        try{requestRebind(new ComponentName(ctx,Bandeja.class));}
+        catch(Exception ignored){}
+    }
+    void recuperarActivas(){
+        if(!conectado)return;
+        try{
+            StatusBarNotification[] todas=getActiveNotifications();
+            if(todas!=null)for(StatusBarNotification sb:todas)leer(sb);
+            avisar();
+        }catch(Exception ignored){}
+    }
 
     static class Ficha {
         final String id,hilo,nombre,texto;
@@ -43,13 +76,25 @@ public class Bandeja extends NotificationListenerService {
     }
     static void avisar(){Runnable r=cambio;if(r!=null)r.run();}
     @Override public void onListenerConnected(){
-        conectado=true;
+        instancia=this;conectado=true;
         synchronized(activas){activas.clear();}
-        StatusBarNotification[] all=getActiveNotifications();
-        if(all!=null)for(StatusBarNotification sb:all)leer(sb);
-        avisar();
+        recuperarActivas();
     }
-    @Override public void onListenerDisconnected(){conectado=false;synchronized(activas){activas.clear();}avisar();}
+    @Override public void onListenerDisconnected(){
+        conectado=false;
+        instancia=null;
+        synchronized(activas){activas.clear();}
+        avisar();
+        if(accesoConcedido(this)){
+            try{requestRebind(new ComponentName(this,Bandeja.class));}
+            catch(Exception ignored){}
+        }
+    }
+    @Override public void onDestroy(){
+        if(instancia==this)instancia=null;
+        conectado=false;
+        super.onDestroy();
+    }
     @Override public void onNotificationRemoved(StatusBarNotification sb){
         synchronized(activas){activas.remove(sb.getKey());}
         avisar();

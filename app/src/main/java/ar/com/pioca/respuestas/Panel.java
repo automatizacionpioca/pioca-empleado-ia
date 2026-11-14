@@ -5,6 +5,9 @@ import android.content.*;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.media.MediaRecorder;
+import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.speech.RecognizerIntent;
@@ -24,7 +27,7 @@ import java.text.Normalizer;
 import java.util.regex.*;
 import java.util.*;
 
-/** piOca® Empleado IA Premium V5. Mismo package Android y firma de V3. */
+/** piOca® Empleado IA Premium V6. Mantiene package, almacenamiento y firma. */
 public class Panel extends Activity {
     static final int NAVY=Color.rgb(20,33,51),GREEN=Color.rgb(11,117,90),BG=Color.rgb(246,248,250);
     static final int MUTED=Color.rgb(101,115,127),BORDER=Color.rgb(220,228,234);
@@ -36,7 +39,14 @@ public class Panel extends Activity {
     TextToSpeech lector;
     boolean lectorListo=false;
     String lecturaPendiente=null;
-    static final String ID_LECTURA="pioca-v5-respuesta";
+    static final String ID_LECTURA="pioca-v6-respuesta";
+    static final int PERMISO_MIC=310;
+    static final long AUDIO_MAX_BYTES=20L*1024*1024;
+    MediaRecorder grabador;
+    File grabacionActual;
+    AlertDialog dialogoGrabacion;
+    int tipoGrabacion=200, tipoPendiente=200;
+    boolean grabacionFinalizando=false;
     String hiloActual,clienteActual,consultaActual,procesoActual="Presupuestos nuevos";
     String primerBorrador="",propuestaAI="",ultimaIndicacion="",historialCorrecciones="";
     long marcaConsulta=0;
@@ -45,14 +55,25 @@ public class Panel extends Activity {
     final int VOZ=200, VOZ_CORRECCION=201;
 
     @Override public void onCreate(Bundle state){super.onCreate(state);mostrarBandeja(false);}
-    @Override protected void onResume(){super.onResume();Bandeja.cambio=()->runOnUiThread(()->{
-        if(hiloActual==null)mostrarBandeja(mostrandoArchivados);
-        else if(!revisarNuevaConsulta())actualizarEnvio();
-    });
-    if(hiloActual!=null){if(!revisarNuevaConsulta())actualizarEnvio();}
+    @Override protected void onResume(){
+        super.onResume();
+        Bandeja.cambio=()->runOnUiThread(()->{
+            if(hiloActual==null)mostrarBandeja(mostrandoArchivados);
+            else if(!revisarNuevaConsulta())actualizarEnvio();
+        });
+        // El servicio de notificaciones es independiente de esta pantalla.
+        // Si Android lo desconectó, pedimos recuperación y leemos avisos aún activos.
+        Bandeja.recuperar(this);
+        if(hiloActual!=null){if(!revisarNuevaConsulta())actualizarEnvio();}
     }
     @Override protected void onPause(){Bandeja.cambio=null;super.onPause();}
+    @Override protected void onStop(){
+        // Nunca dejar un micrófono grabando inadvertidamente al abandonar la pantalla.
+        if(grabador!=null){finalizarDictado(false);if(dialogoGrabacion!=null)dialogoGrabacion.dismiss();}
+        super.onStop();
+    }
     @Override protected void onDestroy(){
+        if(grabador!=null)finalizarDictado(false);
         if(lector!=null){lector.stop();lector.shutdown();lector=null;}
         super.onDestroy();
     }
@@ -141,7 +162,7 @@ public class Panel extends Activity {
         ImageView logo=new ImageView(this);logo.setImageResource(R.drawable.marca);logo.setScaleType(ImageView.ScaleType.FIT_CENTER);
         barra.addView(logo,lp(39,39));
         LinearLayout marca=linear(true);
-        marca.addView(texto("piOca®",15,NAVY,true));marca.addView(texto("Empleado IA · Premium V4",12,MUTED,false));
+        marca.addView(texto("piOca®",15,NAVY,true));marca.addView(texto("Empleado IA · Premium V6",12,MUTED,false));
         barra.addView(marca,margen(0,-2,7,0,0,0));
         Space espacio=new Space(this);barra.addView(espacio,new LinearLayout.LayoutParams(0,1,1));
         TextView options=texto("⚙",23,NAVY,false);options.setGravity(Gravity.CENTER);options.setContentDescription("Configuración");
@@ -176,6 +197,16 @@ public class Panel extends Activity {
         captura.setPadding(dp(7),dp(12),dp(7),dp(2));
         captura.setOnClickListener(v->startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)));
         container.addView(captura);
+        if(!archivados){
+            TextView bateria=texto("¿No aparecen mensajes con la pantalla bloqueada? Tocá para revisar Batería → Sin restricciones.",12,MUTED,false);
+            bateria.setPadding(dp(7),dp(6),dp(7),dp(8));
+            bateria.setOnClickListener(v->{
+                try{startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:"+getPackageName())));}
+                catch(Exception ex){aviso("Abrí Ajustes → Aplicaciones → Empleado IA → Batería.");}
+            });
+            container.addView(bateria);
+        }
         LinearLayout cabecera=linear(false);cabecera.setGravity(Gravity.CENTER_VERTICAL);
         TextView encabezado=texto(archivados?"Conversaciones archivadas":"Mensajes por responder",21,NAVY,true);
         cabecera.addView(encabezado,new LinearLayout.LayoutParams(0,-2,1));
@@ -575,12 +606,143 @@ public class Panel extends Activity {
         while(m.find())if(!b.contains(m.group()))return false;
         return true;
     }
+    /** Grabación local continua: el silencio no finaliza el dictado. */
     void dictar(int tipo){
-        Intent voz=new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-        voz.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-        voz.putExtra(RecognizerIntent.EXTRA_LANGUAGE,"es-AR");
-        voz.putExtra(RecognizerIntent.EXTRA_PROMPT,tipo==VOZ_CORRECCION?"Dictá las correcciones a la respuesta ya redactada":"Dictá los requisitos para responder al cliente");
-        try{startActivityForResult(voz,tipo);}catch(Exception ex){aviso("No hay servicio de dictado disponible en este teléfono.");}
+        if(grabador!=null){aviso("Ya estás grabando. Tocá Detener y transcribir.");return;}
+        if(checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED){
+            tipoPendiente=tipo;
+            requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO},PERMISO_MIC);
+            return;
+        }
+        iniciarDictadoContinuo(tipo);
+    }
+    @Override public void onRequestPermissionsResult(int codigo,String[] permisos,int[] resultados){
+        super.onRequestPermissionsResult(codigo,permisos,resultados);
+        if(codigo!=PERMISO_MIC)return;
+        if(resultados.length>0&&resultados[0]==PackageManager.PERMISSION_GRANTED)
+            iniciarDictadoContinuo(tipoPendiente);
+        else aviso("Para dictar hay que permitir el micrófono en Android.");
+    }
+    void iniciarDictadoContinuo(int tipo){
+        if(grabador!=null)return;
+        File archivo=null;MediaRecorder mr=null;
+        try{
+            archivo=File.createTempFile("pioca-dictado-", ".m4a",getCacheDir());
+            mr=new MediaRecorder();
+            mr.setAudioSource(MediaRecorder.AudioSource.MIC);
+            mr.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+            mr.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+            mr.setAudioChannels(1);
+            mr.setAudioSamplingRate(16000);
+            mr.setAudioEncodingBitRate(48000);
+            mr.setMaxFileSize(AUDIO_MAX_BYTES);
+            mr.setOutputFile(archivo.getAbsolutePath());
+            mr.prepare();mr.start();
+            grabador=mr;grabacionActual=archivo;tipoGrabacion=tipo;grabacionFinalizando=false;
+            // Mantener pantalla encendida durante el dictado, sin finalizar por pausas.
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            dialogoGrabacion=new AlertDialog.Builder(this)
+                .setTitle("🎙 Grabando instrucciones")
+                .setMessage("Podés hablar, pensar y hacer pausas largas. El micrófono seguirá abierto hasta que pulses Detener y transcribir.\n\nAl salir de la aplicación se cancela la grabación.")
+                .setPositiveButton("■ Detener y transcribir",(d,boton)->finalizarDictado(true))
+                .setNegativeButton("Cancelar",(d,boton)->finalizarDictado(false))
+                .setCancelable(false).create();
+            mr.setOnInfoListener((rec,what,extra)->{
+                if(what==MediaRecorder.MEDIA_RECORDER_INFO_MAX_FILESIZE_REACHED){
+                    runOnUiThread(()->{
+                        if(dialogoGrabacion!=null)dialogoGrabacion.dismiss();
+                        aviso("Se alcanzó el límite de audio. Vamos a transcribir lo grabado.");
+                        finalizarDictado(true);
+                    });
+                }
+            });
+            dialogoGrabacion.show();
+        }catch(Exception ex){
+            if(mr!=null)try{mr.release();}catch(Exception ignored){}
+            if(archivo!=null)archivo.delete();
+            grabador=null;grabacionActual=null;
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            aviso("No se pudo iniciar el micrófono: "+ex.getMessage());
+        }
+    }
+    void finalizarDictado(boolean transcribir){
+        if(grabador==null||grabacionFinalizando)return;
+        grabacionFinalizando=true;
+        File archivo=grabacionActual;
+        int tipo=tipoGrabacion;
+        try{
+            grabador.stop();
+        }catch(Exception ex){
+            transcribir=false;
+            aviso("El audio es demasiado breve o la grabación se interrumpió.");
+        }finally{
+            try{grabador.release();}catch(Exception ignored){}
+            grabador=null;grabacionActual=null;
+            dialogoGrabacion=null;
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            grabacionFinalizando=false;
+        }
+        if(!transcribir){if(archivo!=null)archivo.delete();return;}
+        if(archivo==null||archivo.length()<512){
+            if(archivo!=null)archivo.delete();
+            aviso("No se detectó una grabación válida.");return;
+        }
+        enviarAudioTranscripcion(archivo,tipo);
+    }
+    /** El teléfono no almacena OPENAI_API_KEY; el audio va autenticado a Cloudflare. */
+    void enviarAudioTranscripcion(File archivo,int tipo){
+        SharedPreferences conf=getSharedPreferences("conexion",0);
+        String url=conf.getString("url","").trim(),token=conf.getString("token","");
+        if(!url.startsWith("https://")||token.isEmpty()){
+            archivo.delete();aviso("Configurá la conexión de OpenAI en Empleado IA.");return;
+        }
+        if(archivo.length()>AUDIO_MAX_BYTES){archivo.delete();aviso("El audio excede el tamaño admitido.");return;}
+        final String hilo=hiloActual;
+        final long marca=marcaConsulta;
+        final EditText destino=tipo==VOZ?indicacion:correccion;
+        if(destino==null){archivo.delete();return;}
+        aviso("Grabación finalizada. Transcribiendo tu dictado...");
+        new Thread(()->{
+            HttpsURLConnection con=null;
+            try{
+                String endpoint=url.replaceAll("/+$","")+"/transcribir";
+                con=(HttpsURLConnection)new URL(endpoint).openConnection();
+                con.setConnectTimeout(12000);con.setReadTimeout(90000);
+                con.setRequestMethod("POST");con.setDoOutput(true);
+                con.setRequestProperty("Authorization","Bearer "+token);
+                String boundary="pioca-"+UUID.randomUUID();
+                con.setRequestProperty("Content-Type","multipart/form-data; boundary="+boundary);
+                con.setChunkedStreamingMode(8192);
+                try(OutputStream o=con.getOutputStream();InputStream audio=new FileInputStream(archivo)){
+                    String inicio="--"+boundary+"\r\nContent-Disposition: form-data; name=\"audio\"; filename=\"dictado.m4a\"\r\nContent-Type: audio/mp4\r\n\r\n";
+                    o.write(inicio.getBytes(StandardCharsets.UTF_8));
+                    byte[] buffer=new byte[8192];int leidos;
+                    while((leidos=audio.read(buffer))!=-1)o.write(buffer,0,leidos);
+                    o.write(("\r\n--"+boundary+"--\r\n").getBytes(StandardCharsets.UTF_8));
+                }
+                int code=con.getResponseCode();
+                if(code!=200)throw new IOException("HTTP "+code+". Verificá que actualizaste worker.mjs en Cloudflare.");
+                String texto;
+                try(InputStream is=con.getInputStream()){
+                    texto=new JSONObject(leer(is,128000)).optString("text","").trim();
+                }
+                if(texto.isEmpty())throw new IOException("La transcripción volvió vacía.");
+                runOnUiThread(()->{
+                    if(isDestroyed()||hiloActual==null||!hiloActual.equals(hilo)||marca!=marcaConsulta
+                        ||(tipo==VOZ?indicacion:correccion)!=destino)return;
+                    String anterior=destino.getText().toString().trim();
+                    String finalTexto=anterior.isEmpty()?texto:anterior+" "+texto;
+                    destino.setText(finalTexto);
+                    destino.setSelection(destino.length());
+                    aviso("Dictado transcripto. Revisalo y pedile a la IA que redacte.");
+                });
+            }catch(Exception ex){
+                runOnUiThread(()->{if(!isDestroyed())aviso("No se pudo transcribir: "+ex.getMessage());});
+            }finally{
+                if(con!=null)con.disconnect();
+                archivo.delete(); // El audio no se conserva después del intento.
+            }
+        }).start();
     }
     @Override protected void onActivityResult(int request,int result,Intent data){
         super.onActivityResult(request,result,data);
