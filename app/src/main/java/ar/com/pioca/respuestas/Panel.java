@@ -3,6 +3,13 @@ package ar.com.pioca.respuestas;
 import android.app.*;
 import android.content.*;
 import android.graphics.Color;
+import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.graphics.RectF;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
+import android.view.inputmethod.InputMethodManager;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.media.MediaRecorder;
@@ -27,10 +34,12 @@ import java.text.Normalizer;
 import java.util.regex.*;
 import java.util.*;
 
-/** piOca® Empleado IA Premium V6. Mantiene package, almacenamiento y firma. */
+/** piOca® Empleado IA Premium V7. Mantiene package, memoria y firma. */
 public class Panel extends Activity {
     static final int NAVY=Color.rgb(20,33,51),GREEN=Color.rgb(11,117,90),BG=Color.rgb(246,248,250);
     static final int MUTED=Color.rgb(101,115,127),BORDER=Color.rgb(220,228,234);
+    static final int IA_DARK=Color.rgb(29,57,91),IA_BLUE=Color.rgb(44,100,151);
+    static final int MIC_GREEN=Color.rgb(37,211,102),MIC_RED=Color.rgb(211,55,65);
     LinearLayout root,body,container;
     ScrollView scroll;
     EditText indicacion,resultado,correccion;
@@ -39,12 +48,16 @@ public class Panel extends Activity {
     TextToSpeech lector;
     boolean lectorListo=false;
     String lecturaPendiente=null;
-    static final String ID_LECTURA="pioca-v6-respuesta";
+    static final String ID_LECTURA="pioca-v7-respuesta";
     static final int PERMISO_MIC=310;
     static final long AUDIO_MAX_BYTES=20L*1024*1024;
     MediaRecorder grabador;
     File grabacionActual;
     AlertDialog dialogoGrabacion;
+    TextView contadorGrabacion;
+    long inicioGrabacion=0;
+    final Handler relojGrabacion=new Handler(Looper.getMainLooper());
+    Runnable tareaReloj;
     int tipoGrabacion=200, tipoPendiente=200;
     boolean grabacionFinalizando=false;
     String hiloActual,clienteActual,consultaActual,procesoActual="Presupuestos nuevos";
@@ -69,10 +82,11 @@ public class Panel extends Activity {
     @Override protected void onPause(){Bandeja.cambio=null;super.onPause();}
     @Override protected void onStop(){
         // Nunca dejar un micrófono grabando inadvertidamente al abandonar la pantalla.
-        if(grabador!=null){finalizarDictado(false);if(dialogoGrabacion!=null)dialogoGrabacion.dismiss();}
+        if(grabador!=null){cerrarPanelGrabacion();finalizarDictado(false);}
         super.onStop();
     }
     @Override protected void onDestroy(){
+        pararContador();
         if(grabador!=null)finalizarDictado(false);
         if(lector!=null){lector.stop();lector.shutdown();lector=null;}
         super.onDestroy();
@@ -153,6 +167,70 @@ public class Panel extends Activity {
         b.setPadding(dp(12),dp(5),dp(12),dp(5));b.setOnClickListener(v->click.run());return b;
     }
     void aviso(String s){Toast.makeText(this,s,Toast.LENGTH_LONG).show();}
+    /** Ícono vectorial, inspirado en la claridad visual del micrófono de WhatsApp, no un emoji. */
+    static class MicVisual extends View {
+        final Paint pincel=new Paint(Paint.ANTI_ALIAS_FLAG);
+        final boolean grabando;
+        MicVisual(Context context,boolean grabando){super(context);this.grabando=grabando;setLayerType(View.LAYER_TYPE_SOFTWARE,null);}
+        @Override protected void onDraw(Canvas original){
+            super.onDraw(original);
+            float lado=Math.min(getWidth(),getHeight());
+            if(lado<=0)return;
+            Canvas c=original;
+            c.save();c.translate((getWidth()-lado)/2f,(getHeight()-lado)/2f);
+            float escala=lado/56f;c.scale(escala,escala);
+            pincel.setStyle(Paint.Style.FILL);
+            pincel.setColor(grabando?MIC_RED:MIC_GREEN);
+            c.drawCircle(28,28,26,pincel);
+            pincel.setColor(grabando?Color.WHITE:Color.BLACK);
+            c.drawRoundRect(new RectF(24,15,32,33),4,4,pincel);
+            pincel.setStyle(Paint.Style.STROKE);pincel.setStrokeWidth(2.8f);pincel.setStrokeCap(Paint.Cap.ROUND);
+            c.drawArc(new RectF(18,22,38,41),0,180,false,pincel);
+            c.drawLine(28,41,28,46,pincel);
+            c.drawLine(23,46,33,46,pincel);
+            pincel.setStyle(Paint.Style.FILL);
+            c.restore();
+        }
+    }
+    View botonMicrofono(boolean grabando,String descripcion,Runnable accion){
+        MicVisual mic=new MicVisual(this,grabando);
+        mic.setContentDescription(descripcion);
+        mic.setClickable(true);mic.setFocusable(true);
+        mic.setOnClickListener(v->accion.run());
+        return mic;
+    }
+    /** Flechas laterales para recorrer textos extensos sin mover el cursor del teclado. */
+    LinearLayout textoConNavegacion(EditText campo){
+        campo.setGravity(Gravity.TOP | Gravity.START);
+        campo.setVerticalScrollBarEnabled(true);
+        campo.setScrollbarFadingEnabled(false);
+        campo.setScrollBarStyle(View.SCROLLBARS_INSIDE_INSET);
+        LinearLayout caja=linear(false);caja.setGravity(Gravity.TOP);
+        caja.addView(campo,new LinearLayout.LayoutParams(0,-2,1));
+        LinearLayout navegacion=linear(true);
+        navegacion.setPadding(dp(4),dp(1),0,0);
+        Button arriba=boton("▲",NAVY,false,()->desplazarTexto(campo,-1));
+        Button abajo=boton("▼",NAVY,false,()->desplazarTexto(campo,1));
+        arriba.setTextSize(16);abajo.setTextSize(16);
+        arriba.setContentDescription("Desplazar texto hacia arriba");
+        abajo.setContentDescription("Desplazar texto hacia abajo");
+        navegacion.addView(arriba,lp(38,44));
+        navegacion.addView(abajo,margen(38,44,0,5,0,0));
+        caja.addView(navegacion,lp(42,-2));
+        return caja;
+    }
+    void desplazarTexto(EditText campo,int direccion){
+        campo.post(()->{
+            android.text.Layout layout=campo.getLayout();
+            if(layout==null)return;
+            int altoVisible=campo.getHeight()-campo.getTotalPaddingTop()-campo.getTotalPaddingBottom();
+            if(altoVisible<=0)return;
+            int max=Math.max(0,layout.getHeight()-altoVisible);
+            int salto=Math.max(dp(72),Math.round(altoVisible*0.7f));
+            int destino=Math.min(max,Math.max(0,campo.getScrollY()+direccion*salto));
+            campo.scrollTo(campo.getScrollX(),destino);
+        });
+    }
     LinearLayout card(){LinearLayout c=linear(true);c.setPadding(dp(14),dp(13),dp(14),dp(13));
         c.setBackground(fondo(Color.WHITE,16,BORDER));return c;}
     void empezar(String subtitulo){
@@ -162,7 +240,7 @@ public class Panel extends Activity {
         ImageView logo=new ImageView(this);logo.setImageResource(R.drawable.marca);logo.setScaleType(ImageView.ScaleType.FIT_CENTER);
         barra.addView(logo,lp(39,39));
         LinearLayout marca=linear(true);
-        marca.addView(texto("piOca®",15,NAVY,true));marca.addView(texto("Empleado IA · Premium V6",12,MUTED,false));
+        marca.addView(texto("piOca®",15,NAVY,true));marca.addView(texto("Empleado IA · Premium V7",12,MUTED,false));
         barra.addView(marca,margen(0,-2,7,0,0,0));
         Space espacio=new Space(this);barra.addView(espacio,new LinearLayout.LayoutParams(0,1,1));
         TextView options=texto("⚙",23,NAVY,false);options.setGravity(Gravity.CENTER);options.setContentDescription("Configuración");
@@ -381,10 +459,10 @@ public class Panel extends Activity {
         indicacion=new EditText(this);indicacion.setTextSize(15);indicacion.setTextColor(NAVY);
         indicacion.setBackground(fondo(BG,11,BORDER));indicacion.setPadding(dp(11),dp(10),dp(11),dp(10));
         indicacion.setHint("Dictá tu respuesta o escribila...");indicacion.setMinLines(3);indicacion.setMaxLines(7);
-        fila.addView(indicacion,new LinearLayout.LayoutParams(0,-2,1));
-        Button voz=boton("🎙",GREEN,true,()->dictar(VOZ));voz.setContentDescription("Dictar indicación por voz");
-        fila.addView(voz,margen(54,56,7,0,0,0));indicaciones.addView(fila);
-        Button mejorar=boton("✦  Redactar profesionalmente",GREEN,true,()->generar("redactar"));
+        fila.addView(textoConNavegacion(indicacion),new LinearLayout.LayoutParams(0,-2,1));
+        View voz=botonMicrofono(false,"Dictar indicación por voz",()->dictar(VOZ));
+        fila.addView(voz,margen(55,55,8,0,0,0));indicaciones.addView(fila);
+        Button mejorar=boton("✦  Redactar profesionalmente",IA_DARK,true,()->generar("redactar"));
         indicaciones.addView(mejorar,margen(-1,48,0,12,0,0));
         container.addView(indicaciones,margen(-1,-2,0,0,0,14));
         LinearLayout editor=card();editor.addView(texto("Respuesta para el cliente",16,NAVY,true));
@@ -395,7 +473,7 @@ public class Panel extends Activity {
         resultado.setHint("Aquí aparecerá la redacción profesional...");
         String memoriaBorrador=getSharedPreferences("borradores",0).getString(claveBorrador(),"");
         if(!memoriaBorrador.isEmpty())resultado.setText(memoriaBorrador);
-        editor.addView(resultado,lp(-1,-2));
+        editor.addView(textoConNavegacion(resultado),lp(-1,-2));
         botonLectura=boton("▶ Escuchar respuesta",NAVY,false,this::escucharRespuesta);
         botonLectura.setContentDescription("Reproducir en voz alta la respuesta para el cliente");
         editor.addView(botonLectura,margen(-1,44,0,10,0,0));
@@ -416,12 +494,11 @@ public class Panel extends Activity {
         correccion.setBackground(fondo(BG,11,BORDER));correccion.setPadding(dp(11),dp(10),dp(11),dp(10));
         correccion.setHint("Ej.: Sacá el último párrafo y aclará que necesitamos una foto del portón completo.");
         correccion.setMinLines(3);correccion.setMaxLines(6);
-        filaCorreccion.addView(correccion,new LinearLayout.LayoutParams(0,-2,1));
-        Button micCorreccion=boton("🎙",GREEN,true,()->dictar(VOZ_CORRECCION));
-        micCorreccion.setContentDescription("Dictar correcciones al mensaje ya armado");
-        filaCorreccion.addView(micCorreccion,margen(54,56,7,0,0,0));
+        filaCorreccion.addView(textoConNavegacion(correccion),new LinearLayout.LayoutParams(0,-2,1));
+        View micCorreccion=botonMicrofono(false,"Dictar correcciones al mensaje ya armado",()->dictar(VOZ_CORRECCION));
+        filaCorreccion.addView(micCorreccion,margen(55,55,8,0,0,0));
         ajuste.addView(filaCorreccion);
-        Button aplicar=boton("✦ Aplicar correcciones con IA",GREEN,true,()->generar("correccion"));
+        Button aplicar=boton("✦ Aplicar correcciones con IA",IA_BLUE,true,()->generar("correccion"));
         ajuste.addView(aplicar,margen(-1,48,0,12,0,0));
         editor.addView(ajuste,margen(-1,-2,0,12,0,6));
         Button orto=boton("✓ Revalidar solo ortografía",NAVY,false,()->generar("ortografia"));
@@ -641,29 +718,88 @@ public class Panel extends Activity {
             grabador=mr;grabacionActual=archivo;tipoGrabacion=tipo;grabacionFinalizando=false;
             // Mantener pantalla encendida durante el dictado, sin finalizar por pausas.
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-            dialogoGrabacion=new AlertDialog.Builder(this)
-                .setTitle("🎙 Grabando instrucciones")
-                .setMessage("Podés hablar, pensar y hacer pausas largas. El micrófono seguirá abierto hasta que pulses Detener y transcribir.\n\nAl salir de la aplicación se cancela la grabación.")
-                .setPositiveButton("■ Detener y transcribir",(d,boton)->finalizarDictado(true))
-                .setNegativeButton("Cancelar",(d,boton)->finalizarDictado(false))
-                .setCancelable(false).create();
+            mostrarPanelGrabacion();
             mr.setOnInfoListener((rec,what,extra)->{
                 if(what==MediaRecorder.MEDIA_RECORDER_INFO_MAX_FILESIZE_REACHED){
                     runOnUiThread(()->{
-                        if(dialogoGrabacion!=null)dialogoGrabacion.dismiss();
+                        cerrarPanelGrabacion();
                         aviso("Se alcanzó el límite de audio. Vamos a transcribir lo grabado.");
                         finalizarDictado(true);
                     });
                 }
             });
-            dialogoGrabacion.show();
         }catch(Exception ex){
             if(mr!=null)try{mr.release();}catch(Exception ignored){}
             if(archivo!=null)archivo.delete();
             grabador=null;grabacionActual=null;
+            cerrarPanelGrabacion();
             getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             aviso("No se pudo iniciar el micrófono: "+ex.getMessage());
         }
+    }
+    void mostrarPanelGrabacion(){
+        // Ocultar el teclado: no debe quedar como protagonista detrás del panel.
+        View foco=getCurrentFocus();
+        if(foco!=null){
+            InputMethodManager teclado=(InputMethodManager)getSystemService(INPUT_METHOD_SERVICE);
+            if(teclado!=null)teclado.hideSoftInputFromWindow(foco.getWindowToken(),0);
+            foco.clearFocus();
+        }
+        LinearLayout panel=linear(true);
+        panel.setPadding(dp(23),dp(24),dp(23),dp(23));
+        panel.setGravity(Gravity.CENTER_HORIZONTAL);
+        panel.setBackground(fondo(Color.WHITE,20,0));
+        TextView titulo=texto("Dictado de instrucciones",19,NAVY,true);
+        titulo.setGravity(Gravity.CENTER);
+        panel.addView(titulo,margen(-1,-2,0,0,0,10));
+        TextView activo=texto("●  GRABANDO · MICRÓFONO ACTIVO",12,MIC_RED,true);
+        activo.setGravity(Gravity.CENTER);
+        panel.addView(activo,margen(-1,-2,0,0,0,12));
+        contadorGrabacion=texto("00:00",35,NAVY,true);
+        contadorGrabacion.setGravity(Gravity.CENTER);
+        contadorGrabacion.setTypeface(Typeface.MONOSPACE,Typeface.BOLD);
+        panel.addView(contadorGrabacion,margen(-1,-2,0,0,0,14));
+        View microfono=botonMicrofono(true,"Detener y transcribir la grabación",()->terminarDesdePanel(true));
+        panel.addView(microfono,margen(104,104,0,0,0,12));
+        TextView leyenda=texto("Tocá el micrófono rojo para terminar y transcribir",13,NAVY,true);
+        leyenda.setGravity(Gravity.CENTER);
+        panel.addView(leyenda,margen(-1,-2,0,0,0,5));
+        TextView ayuda=texto("Podés hacer pausas largas. El audio sigue grabándose hasta que lo detengas.",12,MUTED,false);
+        ayuda.setGravity(Gravity.CENTER);
+        panel.addView(ayuda,margen(-1,-2,0,0,0,18));
+        Button terminar=boton("■  DETENER Y TRANSCRIBIR",IA_DARK,true,()->terminarDesdePanel(true));
+        terminar.setTextSize(15);
+        panel.addView(terminar,margen(-1,53,0,0,0,8));
+        Button cancelar=boton("Cancelar grabación",NAVY,false,()->terminarDesdePanel(false));
+        panel.addView(cancelar,lp(-1,47));
+        dialogoGrabacion=new AlertDialog.Builder(this).setView(panel).setCancelable(false).create();
+        dialogoGrabacion.show();
+        inicioGrabacion=SystemClock.elapsedRealtime();
+        actualizarContador();
+    }
+    void actualizarContador(){
+        if(tareaReloj!=null)relojGrabacion.removeCallbacks(tareaReloj);
+        tareaReloj=new Runnable(){
+            @Override public void run(){
+                if(grabador==null||contadorGrabacion==null)return;
+                long segundos=(SystemClock.elapsedRealtime()-inicioGrabacion)/1000;
+                contadorGrabacion.setText(String.format(Locale.ROOT,"%02d:%02d",segundos/60,segundos%60));
+                relojGrabacion.postDelayed(this,250);
+            }
+        };
+        relojGrabacion.post(tareaReloj);
+    }
+    void pararContador(){
+        if(tareaReloj!=null){relojGrabacion.removeCallbacks(tareaReloj);tareaReloj=null;}
+        contadorGrabacion=null;
+    }
+    void cerrarPanelGrabacion(){
+        pararContador();
+        if(dialogoGrabacion!=null){AlertDialog actual=dialogoGrabacion;dialogoGrabacion=null;actual.dismiss();}
+    }
+    void terminarDesdePanel(boolean transcribir){
+        cerrarPanelGrabacion();
+        finalizarDictado(transcribir);
     }
     void finalizarDictado(boolean transcribir){
         if(grabador==null||grabacionFinalizando)return;
@@ -678,7 +814,7 @@ public class Panel extends Activity {
         }finally{
             try{grabador.release();}catch(Exception ignored){}
             grabador=null;grabacionActual=null;
-            dialogoGrabacion=null;
+            cerrarPanelGrabacion();
             getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             grabacionFinalizando=false;
         }
