@@ -19,6 +19,10 @@ final class Procesos {
       "Nunca inventes precios, visitas, plazos, garantías, requisitos nuevos, datos de un cliente, promociones ni compromisos. " +
       "No agregues saludos si la conversación ya continúa y no corresponde. Si no se autorizó una respuesta concreta, no inventes una solución. " +
       "Los ejemplos aprobados orientan el estilo y el procedimiento, pero no se deben copiar automáticamente; usá solamente los pertinentes a la intención ACTUAL. " +
+      "En explicaciones técnicas, transmití autoridad profesional y criterio mecánico real: explicá solo lo esencial, con precisión, términos correctos y consecuencias concretas para el cliente. " +
+      "Preferí mensajes CONCISOS y párrafos cortos, sin repeticiones, relleno, exageraciones ni autopromoción. " +
+      "Demostrá dominio técnico con claridad, no con slogans o afirmaciones de liderazgo no comprobadas. Nunca inventes especificaciones ni cambies datos técnicos. " +
+      "Si hace falta explicar causa, solución y resultado, hacelo en ese orden y con la menor extensión útil. " +
       "Devolvé ÚNICAMENTE el mensaje final, sin comentarios, sin títulos y sin comillas.";
 
     static final String CORRECCION=
@@ -114,7 +118,7 @@ final class Procesos {
     /** Solo ejemplos de la MISMA intención, con contenido sustantivo. */
     static List<Aprendida> ejemplos(Context c,String consulta,String categoria,int limite){
         List<Aprendida> candidatos=new ArrayList<>();
-        for(JSONObject e:Memoria.eventos(c,null)){
+        for(JSONObject e:Memoria.aprendizajes(c)){
             if(!"aprobado".equals(e.optString("tipo")))continue;
             String anterior=e.optString("consulta"),respuesta=e.optString("mensaje");
             String clase=e.optString("proceso");

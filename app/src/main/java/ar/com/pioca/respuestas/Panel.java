@@ -8,6 +8,8 @@ import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.speech.RecognizerIntent;
+import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
 import android.text.*;
 import android.view.*;
 import android.widget.*;
@@ -22,7 +24,7 @@ import java.text.Normalizer;
 import java.util.regex.*;
 import java.util.*;
 
-/** piOca® Empleado IA Premium V4. Mismo package Android y firma de V3. */
+/** piOca® Empleado IA Premium V5. Mismo package Android y firma de V3. */
 public class Panel extends Activity {
     static final int NAVY=Color.rgb(20,33,51),GREEN=Color.rgb(11,117,90),BG=Color.rgb(246,248,250);
     static final int MUTED=Color.rgb(101,115,127),BORDER=Color.rgb(220,228,234);
@@ -30,7 +32,11 @@ public class Panel extends Activity {
     ScrollView scroll;
     EditText indicacion,resultado,correccion;
     TextView estado;
-    Button enviar, botonProceso;
+    Button enviar, botonProceso, botonLectura;
+    TextToSpeech lector;
+    boolean lectorListo=false;
+    String lecturaPendiente=null;
+    static final String ID_LECTURA="pioca-v5-respuesta";
     String hiloActual,clienteActual,consultaActual,procesoActual="Presupuestos nuevos";
     String primerBorrador="",propuestaAI="",ultimaIndicacion="",historialCorrecciones="";
     long marcaConsulta=0;
@@ -46,6 +52,65 @@ public class Panel extends Activity {
     if(hiloActual!=null){if(!revisarNuevaConsulta())actualizarEnvio();}
     }
     @Override protected void onPause(){Bandeja.cambio=null;super.onPause();}
+    @Override protected void onDestroy(){
+        if(lector!=null){lector.stop();lector.shutdown();lector=null;}
+        super.onDestroy();
+    }
+    void detenerLectura(){
+        lecturaPendiente=null;
+        if(lector!=null)lector.stop();
+        if(botonLectura!=null)botonLectura.setText("▶ Escuchar respuesta");
+    }
+    void escucharRespuesta(){
+        if(resultado==null)return;
+        String textoParaLeer=resultado.getText().toString().trim();
+        if(textoParaLeer.isEmpty()){aviso("Primero prepará una respuesta para escuchar.");return;}
+        if(lector!=null&&lector.isSpeaking()){detenerLectura();return;}
+        if(lectorListo){reproducirTexto(textoParaLeer);return;}
+        lecturaPendiente=textoParaLeer;
+        if(lector!=null){aviso("Preparando la voz del teléfono...");return;}
+        if(botonLectura!=null)botonLectura.setText("Preparando voz...");
+        lector=new TextToSpeech(getApplicationContext(),estadoTts->runOnUiThread(()->{
+            if(isDestroyed()||lector==null)return;
+            if(estadoTts!=TextToSpeech.SUCCESS){
+                lectorListo=false;lecturaPendiente=null;
+                if(botonLectura!=null)botonLectura.setText("▶ Escuchar respuesta");
+                aviso("No se pudo iniciar la voz. Revisá la síntesis de voz de Android.");
+                return;
+            }
+            int idioma=lector.setLanguage(new Locale("es","AR"));
+            if(idioma==TextToSpeech.LANG_NOT_SUPPORTED||idioma==TextToSpeech.LANG_MISSING_DATA)
+                idioma=lector.setLanguage(new Locale("es","ES"));
+            if(idioma==TextToSpeech.LANG_NOT_SUPPORTED||idioma==TextToSpeech.LANG_MISSING_DATA){
+                lecturaPendiente=null;
+                if(botonLectura!=null)botonLectura.setText("▶ Escuchar respuesta");
+                aviso("Instalá una voz en español en los ajustes de texto a voz del teléfono.");
+                return;
+            }
+            lector.setSpeechRate(0.94f);
+            lector.setOnUtteranceProgressListener(new UtteranceProgressListener(){
+                @Override public void onStart(String id){}
+                @Override public void onDone(String id){runOnUiThread(()->{
+                    if(botonLectura!=null)botonLectura.setText("▶ Escuchar respuesta");
+                });}
+                @Override public void onError(String id){runOnUiThread(()->{
+                    if(botonLectura!=null)botonLectura.setText("▶ Escuchar respuesta");
+                    aviso("No se pudo reproducir la respuesta.");
+                });}
+            });
+            lectorListo=true;
+            if(lecturaPendiente!=null){String pendiente=lecturaPendiente;lecturaPendiente=null;reproducirTexto(pendiente);}
+        }));
+    }
+    void reproducirTexto(String texto){
+        if(lector==null||!lectorListo)return;
+        if(botonLectura!=null)botonLectura.setText("■ Detener lectura");
+        int res=lector.speak(texto,TextToSpeech.QUEUE_FLUSH,null,ID_LECTURA);
+        if(res==TextToSpeech.ERROR){
+            if(botonLectura!=null)botonLectura.setText("▶ Escuchar respuesta");
+            aviso("No se pudo iniciar la reproducción.");
+        }
+    }
 
     int dp(float x){return Math.round(x*getResources().getDisplayMetrics().density);}
     GradientDrawable fondo(int color,int r,int stroke){
@@ -88,6 +153,8 @@ public class Panel extends Activity {
         scroll.addView(container);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
     }
     void mostrarBandeja(boolean archivados){
+        detenerLectura();
+        botonLectura=null;
         hiloActual=null;indicacion=null;resultado=null;correccion=null;enviar=null;
         mostrandoArchivados=archivados;
         empezar("Bandeja de atención · WhatsApp Business");
@@ -109,11 +176,24 @@ public class Panel extends Activity {
         captura.setPadding(dp(7),dp(12),dp(7),dp(2));
         captura.setOnClickListener(v->startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)));
         container.addView(captura);
+        LinearLayout cabecera=linear(false);cabecera.setGravity(Gravity.CENTER_VERTICAL);
         TextView encabezado=texto(archivados?"Conversaciones archivadas":"Mensajes por responder",21,NAVY,true);
-        container.addView(encabezado,margen(-1,-2,2,20,2,5));
-        TextView detalle=texto(archivados?"Podés recuperar cualquier conversación deslizando a la derecha.":
+        cabecera.addView(encabezado,new LinearLayout.LayoutParams(0,-2,1));
+        if(archivados){
+            Button borrarTodos=boton("Borrar todos",Color.rgb(146,48,48),false,this::confirmarBorradoArchivados);
+            borrarTodos.setTextColor(Color.rgb(146,48,48));
+            cabecera.addView(borrarTodos,margen(132,42,8,0,0,0));
+        }
+        container.addView(cabecera,margen(-1,-2,2,20,2,5));
+        TextView detalle=texto(archivados?"Podés recuperar conversaciones deslizando a la derecha. Borrar todos elimina el historial, no los aprendizajes.":
             "Deslizá una conversación hacia la izquierda para archivarla.",12,MUTED,false);
         container.addView(detalle,margen(-1,-2,2,0,2,18));
+        if(archivados){
+            TextView aprendizaje=texto("🧠 Respuestas aprendidas: "+Memoria.aprendizajes(this).size()+" · Ver registro",13,GREEN,true);
+            aprendizaje.setPadding(dp(8),dp(2),dp(8),dp(13));
+            aprendizaje.setOnClickListener(v->mostrarAprendizajes());
+            container.addView(aprendizaje);
+        }
         List<Memoria.Hilo> lista=Memoria.hilos(this,archivados);
         if(lista.isEmpty()){
             LinearLayout c=card();c.addView(texto(archivados?"No hay conversaciones archivadas":"No hay mensajes pendientes",17,NAVY,true));
@@ -121,6 +201,46 @@ public class Panel extends Activity {
             container.addView(c,lp(-1,-2));return;
         }
         for(Memoria.Hilo h:lista)tarjetaHilo(h,archivados);
+    }
+    void mostrarAprendizajes(){
+        try{
+            List<JSONObject> guardadas=Memoria.aprendizajes(this);
+            if(guardadas.isEmpty()){aviso("Todavía no hay respuestas aprobadas aprendidas.");return;}
+            int n=Math.min(50,guardadas.size());
+            String[] opciones=new String[n];
+            for(int i=0;i<n;i++){
+                JSONObject e=guardadas.get(i);
+                String pregunta=e.optString("consulta").replace('\n',' ');
+                if(pregunta.length()>65)pregunta=pregunta.substring(0,65)+"…";
+                opciones[i]=e.optString("proceso","Otro proceso")+" · "+pregunta;
+            }
+            new AlertDialog.Builder(this).setTitle("Respuestas aprendidas ("+guardadas.size()+")")
+                .setMessage("Se guardan aparte del historial. Borrar Archivados no afecta esta memoria.")
+                .setItems(opciones,(d,which)->{
+                    JSONObject e=guardadas.get(which);
+                    new AlertDialog.Builder(this).setTitle(e.optString("proceso"))
+                        .setMessage("Consulta original:\n"+e.optString("consulta")+"\n\nRespuesta aprobada:\n"+e.optString("mensaje"))
+                        .setPositiveButton("Cerrar",null).show();
+                }).setNegativeButton("Cerrar",null).show();
+        }catch(Exception ex){aviso("No se pudo abrir el registro de aprendizajes.");}
+    }
+    void confirmarBorradoArchivados(){
+        int cantidad=Memoria.hilos(this,true).size();
+        if(cantidad==0){aviso("No hay conversaciones archivadas para borrar.");return;}
+        new AlertDialog.Builder(this)
+            .setTitle("¿Borrar todas las conversaciones archivadas?")
+            .setMessage("Se eliminará el historial de "+cantidad+" conversaciones archivadas de Empleado IA. " +
+                "Las respuestas aprobadas pasarán a la memoria de aprendizaje permanente; " +
+                "no se borrarán los procesos, reglas ni conocimientos. " +
+                "Esto no elimina los mensajes originales de WhatsApp Business.")
+            .setNegativeButton("Cancelar",null)
+            .setPositiveButton("Borrar archivados",(d,w)->{
+                try{
+                    int borrados=Memoria.borrarArchivados(this);
+                    mostrarBandeja(true);
+                    aviso("Se borraron "+borrados+" conversaciones. Aprendizajes conservados.");
+                }catch(Exception ex){aviso("No se borró el historial: "+ex.getMessage());}
+            }).show();
     }
     void tarjetaHilo(Memoria.Hilo h,boolean archivados){
         LinearLayout c=card();c.setElevation(dp(1));
@@ -186,6 +306,8 @@ public class Panel extends Activity {
     }
     String claveBorrador(){return "texto.v4."+hash(hiloActual+"\n"+marcaConsulta);}
     void mostrarConversacion(){
+        detenerLectura();
+        botonLectura=null;
         empezar("‹  "+clienteActual+"  ·  Conversación disponible");
         LinearLayout acciones=linear(false);acciones.setGravity(Gravity.CENTER_VERTICAL);
         Button atras=boton("‹ Volver",NAVY,false,()->mostrarBandeja(false));
@@ -243,10 +365,14 @@ public class Panel extends Activity {
         String memoriaBorrador=getSharedPreferences("borradores",0).getString(claveBorrador(),"");
         if(!memoriaBorrador.isEmpty())resultado.setText(memoriaBorrador);
         editor.addView(resultado,lp(-1,-2));
+        botonLectura=boton("▶ Escuchar respuesta",NAVY,false,this::escucharRespuesta);
+        botonLectura.setContentDescription("Reproducir en voz alta la respuesta para el cliente");
+        editor.addView(botonLectura,margen(-1,44,0,10,0,0));
         resultado.addTextChangedListener(new TextWatcher(){
             public void beforeTextChanged(CharSequence s,int start,int count,int after){}
             public void onTextChanged(CharSequence s,int start,int before,int count){
                 getSharedPreferences("borradores",0).edit().putString(claveBorrador(),s.toString()).apply();
+                if(lector!=null&&lector.isSpeaking())detenerLectura();
                 actualizarEnvio();
             }
             public void afterTextChanged(Editable s){}
@@ -302,6 +428,7 @@ public class Panel extends Activity {
             return;
         }
         try{
+            detenerLectura();
             f.responder(this,fin); // Android acepta el PendingIntent; no es un recibo de entrega al destinatario.
             String clave=Memoria.aprobada(this,hiloActual,clienteActual,consultaActual,primerBorrador,propuestaAI,fin,procesoActual,(historialCorrecciones.isEmpty()?ultimaIndicacion:ultimaIndicacion+"\nCorrecciones: "+historialCorrecciones));
             Memoria.archivar(this,hiloActual);
@@ -524,7 +651,7 @@ public class Panel extends Activity {
     void respaldo(boolean exportar){
         Intent i=new Intent(exportar?Intent.ACTION_CREATE_DOCUMENT:Intent.ACTION_OPEN_DOCUMENT);
         i.addCategory(Intent.CATEGORY_OPENABLE);i.setType("application/json");
-        if(exportar)i.putExtra(Intent.EXTRA_TITLE,"pioca-memoria-v4-"+System.currentTimeMillis()+".json");
+        if(exportar)i.putExtra(Intent.EXTRA_TITLE,"pioca-memoria-v5-"+System.currentTimeMillis()+".json");
         startActivityForResult(i,exportar?10:11);
     }
     static String hash(String s){try{

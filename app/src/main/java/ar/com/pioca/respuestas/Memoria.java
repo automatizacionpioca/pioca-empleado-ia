@@ -4,9 +4,76 @@ import android.content.*;
 import org.json.*;
 import java.util.*;
 
-/** Almacenamiento V4: compatible con archivo y procesos de V2/V3. */
+/** V5: historiales y memoria de aprendizaje independientes, compatibles con V2/V3/V4. */
 final class Memoria {
     static SharedPreferences datos(Context c){return c.getSharedPreferences("archivo",0);}
+    static SharedPreferences memoriaAprendida(Context c){return c.getSharedPreferences("aprendizaje_v5",0);}
+    /** El conocimiento aprobado sobrevive a la limpieza de chats archivados. */
+    static JSONObject resumenAprendido(JSONObject evento){
+        JSONObject ejemplo=new JSONObject();
+        try{
+            ejemplo.put("tipo","aprobado");
+            ejemplo.put("hilo",evento.optString("hilo")); // identificador interno para deduplicar, no teléfono
+            ejemplo.put("consulta",evento.optString("consulta"));
+            ejemplo.put("mensaje",evento.optString("mensaje"));
+            ejemplo.put("proceso",evento.optString("proceso"));
+            ejemplo.put("hora",evento.optString("hora"));
+            ejemplo.put("indicacion",evento.optString("indicacion"));
+        }catch(JSONException ex){throw new IllegalStateException(ex);}
+        return ejemplo;
+    }
+    /** Migra respuestas V2-V4 a un registro independiente; falla antes de permitir borrados. */
+    static void asegurarAprendizajes(Context c){
+        Map<String,?> existentes=memoriaAprendida(c).getAll();
+        SharedPreferences.Editor edit=memoriaAprendida(c).edit();
+        boolean cambios=false;
+        for(Map.Entry<String,?> e:datos(c).getAll().entrySet()){
+            if(existentes.containsKey(e.getKey()) || !(e.getValue() instanceof String))continue;
+            try{
+                JSONObject mensaje=new JSONObject((String)e.getValue());
+                if(!"aprobado".equals(mensaje.optString("tipo")))continue;
+                edit.putString(e.getKey(),resumenAprendido(mensaje).toString());
+                cambios=true;
+            }catch(JSONException ignored){}
+        }
+        if(cambios&&!edit.commit())throw new IllegalStateException("No se pudo preservar la memoria aprendida.");
+    }
+    static List<JSONObject> aprendizajes(Context c){
+        asegurarAprendizajes(c);
+        List<JSONObject> lista=new ArrayList<>();
+        for(Object valor:memoriaAprendida(c).getAll().values())if(valor instanceof String)try{
+            JSONObject j=new JSONObject((String)valor);
+            if("aprobado".equals(j.optString("tipo")))lista.add(j);
+        }catch(JSONException ignored){}
+        lista.sort((a,b)->Long.compare(b.optLong("hora"),a.optLong("hora")));
+        return lista;
+    }
+    /** Elimina solamente conversaciones archivadas, nunca ejemplos de aprendizaje. */
+    static int borrarArchivados(Context c){
+        asegurarAprendizajes(c); // primero garantizar el respaldo del conocimiento
+        SharedPreferences archivados=c.getSharedPreferences("archivados_v3",0);
+        Set<String> hilos=new HashSet<>(archivados.getAll().keySet());
+        if(hilos.isEmpty())return 0;
+        SharedPreferences.Editor registros=datos(c).edit();
+        SharedPreferences.Editor borradores=c.getSharedPreferences("borradores",0).edit();
+        for(Map.Entry<String,?> e:datos(c).getAll().entrySet()){
+            if(!(e.getValue() instanceof String))continue;
+            try{
+                JSONObject evento=new JSONObject((String)e.getValue());
+                String hilo=evento.optString("hilo");
+                if(!hilos.contains(hilo))continue;
+                registros.remove(e.getKey());
+                // Los borradores son por consulta; limpiar los de esos mensajes archivados.
+                if("recibido".equals(evento.optString("tipo")))
+                    borradores.remove("texto.v4."+Panel.hash(hilo+"\n"+evento.optLong("hora")));
+                borradores.remove("texto.v3."+Panel.hash(hilo));
+            }catch(JSONException ignored){}
+        }
+        if(!registros.commit())throw new IllegalStateException("No se pudo borrar el historial; no se modificó el archivo.");
+        if(!borradores.commit())throw new IllegalStateException("No se pudieron limpiar los borradores.");
+        if(!archivados.edit().clear().commit())throw new IllegalStateException("No se pudo actualizar la bandeja de archivados.");
+        return hilos.size();
+    }
     static JSONObject objeto(String... pares) {
         JSONObject j=new JSONObject();
         try{for(int i=0;i<pares.length;i+=2)j.put(pares[i],pares[i+1]);}
@@ -41,7 +108,11 @@ final class Memoria {
             "hora",Long.toString(System.currentTimeMillis()),"tipo","aprobado",
             "propuesta",propuesta==null?"":propuesta,"borrador_original",primerBorrador==null?"":primerBorrador,
             "proceso",proceso,"indicacion",indicacion==null?"":indicacion);
+        // Se guarda tanto en el historial del chat como en la memoria de aprendizaje.
+        // El aprendizaje permanece aunque después se borre el chat archivado.
+        // El envío ya fue solicitado a WhatsApp; no fallar la pantalla por un error de guardado.
         datos(c).edit().putString(k,evento.toString()).apply();
+        memoriaAprendida(c).edit().putString(k,resumenAprendido(evento).toString()).apply();
         return k;
     }
     static void procesoDeRespuesta(Context c,String clave,String categoria) {
@@ -49,7 +120,8 @@ final class Memoria {
         String raw=datos(c).getString(clave,null);
         if(raw==null)return;
         try{JSONObject evento=new JSONObject(raw);evento.put("proceso",categoria);
-            datos(c).edit().putString(clave,evento.toString()).apply();}
+            datos(c).edit().putString(clave,evento.toString()).apply();
+            memoriaAprendida(c).edit().putString(clave,resumenAprendido(evento).toString()).apply();}
         catch(JSONException ignored){}
     }
     static void archivar(Context c,String hilo){c.getSharedPreferences("archivados_v3",0).edit().putLong(hilo,System.currentTimeMillis()).apply();}
@@ -124,8 +196,9 @@ final class Memoria {
         }
         return a;
     }
-    static final String[] grupos={"procesos","archivo","borradores","categorias_v3","archivados_v3","conocimiento_v4"};
+    static final String[] grupos={"procesos","archivo","borradores","categorias_v3","archivados_v3","conocimiento_v4","aprendizaje_v5"};
     static String respaldo(Context c)throws JSONException {
+        asegurarAprendizajes(c);
         JSONObject doc=new JSONObject().put("formato","piOca-respuestas-3");
         for(String g:grupos)doc.put(g,new JSONObject(c.getSharedPreferences(g,0).getAll()));
         return doc.toString();
@@ -149,5 +222,6 @@ final class Memoria {
                 else ed.putString(k,(String)v);
             }ed.apply();
         }
+        asegurarAprendizajes(c);
     }
 }
