@@ -13,8 +13,8 @@ android {
         minSdk 26
         targetSdk 35
         // Número creciente automático, sin editar a mano en cada actualización
-        versionCode 600000 + numeroCompilacion
-        versionName '6.0'
+        versionCode 700000 + numeroCompilacion
+        versionName '7.0'
     }
     signingConfigs {
         pioca {
